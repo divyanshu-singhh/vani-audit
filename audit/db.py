@@ -208,7 +208,32 @@ MIGRATIONS = [
     "ALTER TABLE fix_tests ADD COLUMN backend TEXT",
     "ALTER TABLE grades ADD COLUMN scorecard_json TEXT",
     "ALTER TABLE fixes ADD COLUMN selected INTEGER DEFAULT 1",
+    # upload batches
+    "CREATE TABLE IF NOT EXISTS batches (batch_id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,"
+    " source TEXT, label TEXT)",
+    "ALTER TABLE calls ADD COLUMN batch_id INTEGER",
+    # grader not sure → human review
+    "ALTER TABLE grades ADD COLUMN manual_review INTEGER DEFAULT 0",
+    "ALTER TABLE grades ADD COLUMN review_reason TEXT",
+    # automatic refinement rounds
+    "ALTER TABLE test_runs ADD COLUMN round INTEGER DEFAULT 1",
+    "ALTER TABLE test_runs ADD COLUMN parent_run INTEGER",
+    "ALTER TABLE test_runs ADD COLUMN verdict TEXT",
+    "ALTER TABLE test_runs ADD COLUMN compare_json TEXT",
 ]
+
+
+def _backfill_batches(c):
+    """Calls added before batches existed: group uploads made within 2 minutes of each other."""
+    rows = c.execute("SELECT call_id, added_at FROM calls WHERE batch_id IS NULL ORDER BY added_at").fetchall()
+    batch, last = None, None
+    for r in rows:
+        t = datetime.fromisoformat(r["added_at"])
+        if batch is None or (t - last).total_seconds() > 120:
+            batch = c.execute("INSERT INTO batches (created_at, source, label) VALUES (?, 'earlier', ?)",
+                              (r["added_at"], "Earlier upload")).lastrowid
+        c.execute("UPDATE calls SET batch_id=? WHERE call_id=?", (batch, r["call_id"]))
+        last = t
 
 
 def init():
@@ -219,6 +244,7 @@ def init():
                 c.execute(m)
             except sqlite3.OperationalError:
                 pass  # column already exists
+        _backfill_batches(c)
 
 
 def rows(sql: str, params=()) -> list[dict]:

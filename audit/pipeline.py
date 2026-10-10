@@ -7,6 +7,7 @@
     python -m audit.pipeline test     [--version v1] [--cases fatal|all|<id,id>]   # 8: original vs corrected
     python -m audit.pipeline all      [--folder ...]         # everything above
     python -m audit.pipeline retry | regrade
+    python -m audit.pipeline clear [--no-backup]            # remove all recordings & results, start fresh
 """
 import argparse
 import logging
@@ -14,7 +15,7 @@ import os
 import sys
 import time
 
-from . import analysis, config, db, fixes, grader, ingest, simulate, transcribe
+from . import analysis, config, db, fixes, grader, ingest, refine, reset, simulate, transcribe
 
 LOCK = config.DATA_DIR / "pipeline.lock"
 log = logging.getLogger("pipeline")
@@ -96,12 +97,15 @@ def pick_cases(which: str) -> list[str]:
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("cmd", choices=["all", "process", "suggest", "version", "testcases", "test", "retry",
-                                   "regrade", "fixes"])
+                                   "regrade", "fixes", "clear"])
     p.add_argument("--folder", default=None, help="folder to scan (default: data/inbox)")
     p.add_argument("--top", type=int, default=5, help="corrections for the top-N root causes")
     p.add_argument("--rc", default=None, help="suggest a correction for this one root cause id")
     p.add_argument("--version", default=None, help="prompt version to test (default: latest)")
     p.add_argument("--cases", default="failed", help="failed | fatal | all | comma-separated call ids")
+    p.add_argument("--no-backup", action="store_true", help="clear: do not keep a backup copy")
+    p.add_argument("--no-refine", action="store_true", help="test once; do not revise the prompt if it is not better")
+    p.add_argument("--rounds", type=int, default=None, help="max test rounds incl. revisions (default REFINE_MAX_ROUNDS)")
     a = p.parse_args(argv)
 
     _setup_logging()
@@ -110,6 +114,12 @@ def main(argv=None):
         log.error("another pipeline run is in progress (%s)", LOCK)
         return 1
     LOCK.write_text(str(os.getpid()))
+    if a.cmd == "clear":
+        try:
+            log.info("cleared history: %s", reset.clear_history(backup=not a.no_backup))
+        finally:
+            LOCK.unlink(missing_ok=True)
+        return 0
     t0 = time.time()
     try:
         if a.cmd in ("all", "process", "retry", "regrade"):
@@ -146,8 +156,11 @@ def main(argv=None):
                 log.error("no corrected prompt yet — run 'version' first")
             else:
                 cases = pick_cases(a.cases)
-                _step(f"Testing {len(cases)} case(s): original vs {v}")
-                log.info("test run: %s", simulate.run_test(v, cases))
+                _step(f"Testing {len(cases)} case(s) with corrected prompt {v}")
+                if a.no_refine:
+                    log.info("test run: %s", simulate.run_test(v, cases))
+                else:
+                    log.info("test runs (with refinement): %s", refine.test_and_refine(v, cases, a.rounds))
     finally:
         LOCK.unlink(missing_ok=True)
         (config.DATA_DIR / "pipeline.step").unlink(missing_ok=True)

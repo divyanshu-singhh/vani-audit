@@ -57,11 +57,19 @@ SCHEMA = {
                     "quote": {"type": "string", "description": "Verbatim words from that turn (original script), '' if ok/na"},
                     "layer": {"type": "string", "enum": list(rubric.LAYERS)},
                     "note": {"type": "string", "description": "≤30 words, English: what was right or wrong"},
+                    "confidence": {"type": "number", "description": "0-1: how sure you are of THIS status"},
                 },
                 "required": ["param", "status", "note"],
             },
         },
         "additional_observation": {"type": "string", "description": "Anything else (pronunciation, tone…), '' if none"},
+        "unsure_about": {
+            "type": "array",
+            "description": "Parameters where you could not decide between ok / non_fatal / fatal from the transcript "
+                           "(e.g. unclear audio, ambiguous buyer intent). Empty if you are sure of everything.",
+            "items": {"type": "object", "properties": {"param": {"type": "string", "enum": rubric.PARAM_KEYS},
+                                                       "why": {"type": "string"}}, "required": ["param", "why"]},
+        },
         "risk_flags": {
             "type": "object",
             "properties": {k: {"type": "boolean"} for k in
@@ -88,7 +96,10 @@ How to audit:
 4. Do not invent problems. A clean call scores ok/na everywhere.
 5. risk_flags: wrong_requirement (captured ≠ stated), frustration (annoyed, repeats self), loop (bot repeats/circles),
    low_confidence (many unclear/garbled buyer turns), human_request (buyer asks for a person / refuses the bot).
-6. root_cause_hypothesis: the underlying reason for the worst problem, phrased so it applies to other calls
+6. Give every non-na status a confidence (0-1). If the transcript does not let you decide between ok, non_fatal and
+   fatal for a parameter (unclear audio, ambiguous buyer intent, missing context), do NOT guess: give your best
+   status with low confidence AND list it in unsure_about with the reason. A human auditor will decide those.
+7. root_cause_hypothesis: the underlying reason for the worst problem, phrased so it applies to other calls
    (e.g. "No instruction for buyers who answer the quantity question with a budget").
 """
 
@@ -132,7 +143,7 @@ def _consensus(system: str, user: str) -> dict:
 
     def sample(_):
         try:
-            return llm.chat_json(system, user, SCHEMA, "call_grade", reasoning=config.GRADER_REASONING,
+            return llm.judge_json(system, user, SCHEMA, "call_grade", reasoning=config.GRADER_REASONING,
                                  temperature=0.0 if n == 1 else 0.3)
         except Exception:
             log.exception("grading sample failed")
@@ -154,9 +165,12 @@ def _consensus(system: str, user: str) -> dict:
         status = tied[0] if len(tied) == 1 else ("non_fatal" if "non_fatal" in tied else
                                                  max(tied, key=SEVERITY_ORDER.get))
         pick = next((e for e in entries if e.get("status") == status), {"note": ""})
+        confs = [float(e["confidence"]) for e in entries
+                 if e.get("status") == status and isinstance(e.get("confidence"), (int, float))]
         card.append({"param": key, "status": status, "turn_index": pick.get("turn_index"),
                      "quote": pick.get("quote", ""), "layer": pick.get("layer", "prompt"),
-                     "note": pick.get("note", ""), "votes": statuses})
+                     "note": pick.get("note", ""), "votes": statuses,
+                     "confidence": round(min(confs), 2) if confs else None})
 
     need = (len(outs) + 1) // 2
     flags = {k: sum(bool((o.get("risk_flags") or {}).get(k)) for o in outs) >= need
@@ -166,7 +180,13 @@ def _consensus(system: str, user: str) -> dict:
         vals = sorted(int((o.get("ask_counts") or {}).get(f) or 0) for o in outs)
         asks[f] = vals[len(vals) // 2]
     base = outs[0]
-    return dict(base, scorecard=card, risk_flags=flags, ask_counts=asks, samples=len(outs))
+    unsure = {}
+    for o in outs:
+        for u in o.get("unsure_about") or []:
+            if u.get("param") in rubric.PARAM_NAMES:
+                unsure.setdefault(u["param"], u.get("why", ""))
+    return dict(base, scorecard=card, risk_flags=flags, ask_counts=asks, samples=len(outs),
+                unsure_about=[{"param": k, "why": v} for k, v in unsure.items()])
 
 
 def _apply_rules(card: list[dict], out: dict, sig: dict, turns: list[dict]):
@@ -247,7 +267,7 @@ def _second_review(card: list[dict], turns: list[dict]):
     user = (f"## Bot rules\n{rubric.BOT_RULES_DIGEST}\n## NOT-issue rules (numbered)\n{numbered}\n\n"
             f"## Transcript\n{format_transcript(turns)}\n\n## Parameters marked FATAL\n{listing}")
     try:
-        verdicts = llm.chat_json(REVIEW_SYSTEM, user, REVIEW_SCHEMA, "issue_review",
+        verdicts = llm.judge_json(REVIEW_SYSTEM, user, REVIEW_SCHEMA, "issue_review",
                                  reasoning=config.GRADER_REASONING, max_tokens=3000)["verdicts"]
     except Exception:
         log.exception("second review failed; keeping first-pass verdicts")
@@ -259,9 +279,9 @@ def _second_review(card: list[dict], turns: list[dict]):
             continue
         c["review"] = v.get("reason", "")
         if not v.get("keep") or int(v.get("not_issue_rule") or 0) > 0:
-            c.update(status="ok", note=f"(rejected on review) {c['note']}")
+            c.update(status="ok", note=f"(rejected on review) {c['note']}", disputed="fatal → ok")
         elif v.get("status") == "non_fatal" and c["param"] not in rubric.NO_NON_FATAL:
-            c["status"] = "non_fatal"
+            c.update(status="non_fatal", disputed="fatal → non-fatal")
 
 
 def overall(card: list[dict]) -> str:
@@ -316,8 +336,60 @@ def grade_turns(turns: list[dict], sig: dict, note: str = "") -> dict:
     conf = float(out.get("confidence") or 0)
     unverified = any(not i["verified"] for i in fatal)
     needs_review = grade == "FATAL" or any(flags.values()) or conf < 0.6 or unverified
+    manual = manual_review_reasons(card, out)
     return {"out": out, "scorecard": card, "issues": issues, "grade": grade, "flags": flags,
-            "confidence": conf, "needs_review": needs_review}
+            "confidence": conf, "needs_review": needs_review, "manual_review": manual}
+
+
+_NEIGHBOURS = {"ok": ["non_fatal"], "na": ["non_fatal"], "non_fatal": ["ok", "fatal"], "fatal": ["non_fatal", "ok"]}
+
+
+def _could_change_result(card: list[dict], param: str) -> bool:
+    """Would a one-step different decision on this parameter change the call's overall result?"""
+    current = overall(card)
+    c = next((x for x in card if x["param"] == param), None)
+    if not c:
+        return False
+    for alt in _NEIGHBOURS.get(c["status"], []):
+        if (alt == "non_fatal" and param in rubric.NO_NON_FATAL) or (alt == "fatal" and param in rubric.NO_FATAL):
+            continue
+        if overall([dict(x, status=alt) if x is c else x for x in card]) != current:
+            return True
+    return False
+
+
+def manual_review_reasons(card: list[dict], out: dict) -> list[str]:
+    """When the grader can't confidently decide Pass / Non-fatal / Fatal for the CALL, a human should.
+    Doubts that cannot change the overall result (e.g. one of several fatal issues) are not escalated."""
+    doubts: list[tuple[str, str]] = []
+    for u in out.get("unsure_about") or []:
+        doubts.append((u["param"], f"grader unsure — {u.get('why', '')}".strip(" —")))
+    for c in card:
+        conf = c.get("confidence")
+        if c.get("source") != "rule" and conf is not None and c["status"] in ("fatal", "non_fatal") \
+                and conf < config.REVIEW_CONFIDENCE:
+            doubts.append((c["param"], f"{c['status'].replace('_', '-')} with low confidence ({conf:.0%})"))
+        if len(set(v for v in c.get("votes") or [] if v != "na")) > 1:
+            doubts.append((c["param"], f"split decision {'/'.join(c['votes'])}"))
+        if c["status"] == "fatal" and not c.get("verified", c.get("source") == "rule"):
+            doubts.append((c["param"], "fatal, but its quoted evidence was not found in the transcript"))
+    reasons = [f"{rubric.PARAM_NAMES.get(p, p)}: {why}" for p, why in doubts if _could_change_result(card, p)]
+    for c in card:  # the reviewer overturned a fatal finding and that alone moved the call's result
+        if c.get("disputed") and overall([dict(x, status="fatal") if x is c else x for x in card]) != overall(card):
+            reasons.append(f"{rubric.PARAM_NAMES.get(c['param'], c['param'])}: auditor said fatal, reviewer said "
+                           f"{c['disputed'].split('→')[-1].strip()} — this decides the call's result")
+    return list(dict.fromkeys(reasons))
+
+
+def refresh_review(call_id: str) -> list[str]:
+    """Re-apply the manual-review rule to a stored grade (no new LLM call)."""
+    g = db.one("SELECT scorecard_json, raw_json FROM grades WHERE call_id=?", (call_id,))
+    if not g:
+        return []
+    reasons = manual_review_reasons(db.loads(g["scorecard_json"], []) or [], db.loads(g["raw_json"], {}) or {})
+    db.execute("UPDATE grades SET manual_review=?, review_reason=? WHERE call_id=?",
+               (int(bool(reasons)), "\n".join(reasons), call_id))
+    return reasons
 
 
 def grade_call(call_id: str) -> dict:
@@ -331,14 +403,15 @@ def grade_call(call_id: str) -> dict:
         c.execute(
             "INSERT OR REPLACE INTO grades (call_id, grade, llm_grade, grade_reason, confidence, flow,"
             " outcome, summary, root_cause_hypothesis, issues_json, risk_flags_json, requirement_json,"
-            " ask_counts_json, needs_review, model, created_at, raw_json, scorecard_json) VALUES"
-            " (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " ask_counts_json, needs_review, model, created_at, raw_json, scorecard_json, manual_review,"
+            " review_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (call_id, r["grade"], r["grade"], out.get("grade_reason"), r["confidence"], out.get("flow"),
              out.get("outcome"), out.get("summary"), out.get("root_cause_hypothesis"),
              json.dumps(r["issues"], ensure_ascii=False), json.dumps(r["flags"]),
              json.dumps(out.get("requirement") or {}, ensure_ascii=False),
-             json.dumps(out.get("ask_counts") or {}), int(r["needs_review"]), config.LLM_MODEL,
-             db.now(), json.dumps(out, ensure_ascii=False), json.dumps(r["scorecard"], ensure_ascii=False)),
+             json.dumps(out.get("ask_counts") or {}), int(r["needs_review"]), llm.judge_label(),
+             db.now(), json.dumps(out, ensure_ascii=False), json.dumps(r["scorecard"], ensure_ascii=False),
+             int(bool(r["manual_review"])), "\n".join(r["manual_review"])),
         )
     db.set_status(call_id, "graded", graded_at=db.now())
     return out

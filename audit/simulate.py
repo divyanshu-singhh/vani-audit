@@ -5,9 +5,9 @@ Test case (step 6), built once per recording from its saved transcript:
     buyer_script  — the buyer's own lines from the recording, in order
     buyer_behaviour / checks — how the buyer behaved and what the bot must get right
 
-Test run (step 8): every chosen case is replayed twice — ORIGINAL prompt and CORRECTED prompt —
-by a simulated buyer that follows the buyer_script, then both conversations are scored with the
-same audit sheet as the real calls (step 9 compares them parameter by parameter).
+Test run (step 8): every chosen case is replayed with the CORRECTED prompt by a simulated buyer that
+follows the buyer_script, then scored with the same audit sheet; step 9 compares it with the
+recording's own audit, parameter by parameter.
 
 Bot under test (config.SIM_BACKEND):
   local   — we render the production prompt for the call (Jinja + variables), run it on a
@@ -455,7 +455,7 @@ def run_test(version_id: str, case_ids: list[str], texts: dict | None = None) ->
         cases = [x for x in (load_case(cid) for cid in case_ids) if x]
         if not cases:
             raise RuntimeError("no test cases — generate the test setup first")
-        jobs = [(case, v) for case in cases for v in ("original", "corrected")]
+        jobs = [(case, "corrected") for case in cases]  # compared against the real recording's audit
         with ThreadPoolExecutor(max_workers=config.SIM_WORKERS) as pool:
             list(pool.map(lambda j: run_one(run_id, version_id, *j, text=(texts or {}).get(j[1])), jobs))
         db.execute("UPDATE test_runs SET finished_at=?, status='done', summary_json=? WHERE run_id=?",

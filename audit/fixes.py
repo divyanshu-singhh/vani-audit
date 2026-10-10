@@ -294,15 +294,22 @@ def build_version(fix_ids: list[str] | None = None, notes: str = "") -> str:
     merged = list(original)
     for i1, i2, new in sorted(changes, key=lambda c: (c[0], c[1]), reverse=True):
         merged[i1:i2] = new
+    note = notes + (f" Skipped overlapping: {', '.join(skipped)}." if skipped else "")
+    vid = save_version(merged, used, note.strip())
+    log.info("prompt %s built from %s (skipped %s)", vid, used, skipped)
+    return vid
+
+
+def save_version(lines: list[str], fix_ids: list[str], notes: str = "") -> str:
+    """Store a full prompt copy as the next version (v1, v2, …); the diff is always against the original."""
+    original = config.BOT_PROMPT_PATH.read_text(encoding="utf-8").splitlines()
     n = (db.one("SELECT COUNT(*) AS n FROM prompt_versions") or {"n": 0})["n"] + 1
     vid = f"v{n}"
     path = config.PROMPT_VERSION_DIR / f"vani_prompt_{vid}.md"
-    path.write_text("\n".join(merged) + "\n", encoding="utf-8")
-    diff = "\n".join(difflib.unified_diff(original, merged, "original_prompt.md", path.name, lineterm="", n=2))
-    note = notes + (f" Skipped overlapping: {', '.join(skipped)}." if skipped else "")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    diff = "\n".join(difflib.unified_diff(original, lines, "original_prompt.md", path.name, lineterm="", n=2))
     db.execute("INSERT INTO prompt_versions (version_id, created_at, fix_ids, path, diff, notes) VALUES (?,?,?,?,?,?)",
-               (vid, db.now(), json.dumps(used), str(path), diff, note.strip()))
-    log.info("prompt %s built from %s (skipped %s)", vid, used, skipped)
+               (vid, db.now(), json.dumps(fix_ids), str(path), diff, notes))
     return vid
 
 

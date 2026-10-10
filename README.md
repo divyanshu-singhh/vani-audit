@@ -14,7 +14,7 @@ call-audit sheet, suggests prompt corrections, and proves them with simulated be
 | ⑤ Corrected prompt | One copy of the prompt with the selected corrections merged (`data/prompts/vani_prompt_vN.md`) + diff. The original is never changed. |
 | ⑥ Test setup | Per recording: what the bot knew at the start, the buyer's own lines from the recording, how the buyer behaves, what the bot must get right (`data/testcases/<file>.json`). Run the automated test from here. |
 | ⑦ Manual test | You type as the buyer; the bot answers from the original and/or corrected prompt, side by side. Score the chats with the audit sheet. |
-| ⑧ Results | Before vs after: recording vs original prompt vs corrected prompt — calls by result, failing calls per parameter, and each case side by side. |
+| ⑧ Results | Recording vs corrected prompt — calls by result, failing calls per parameter, and each case side by side. |
 | Audit criteria | The audit sheet in use, and agreement with human verdicts (import CSV or label in ③). |
 
 ## Run
@@ -35,6 +35,14 @@ The same steps from the command line:
 .venv/Scripts/python scripts/smoke_test.py                           # offline check, no API credits
 ```
 
+## Which model does what
+
+| Step | Model |
+|---|---|
+| Speech-to-text | Sarvam `saaras:v4` |
+| Deciding errors / fatal / non-fatal (scorecard + second review) | **Judge**: GPT or Sonnet via the IM LLM gateway (`JUDGE_API_KEY`, `JUDGE_MODEL` in `.env`); falls back to Sarvam if no key |
+| Test setup, simulation (bot + buyer), root causes, corrections | Sarvam `sarvam-105b` |
+
 ## How a call is graded
 
 1. **Speech-to-text:** Sarvam `saaras:v4` batch API with 2-speaker diarization. VANI is identified by the phrases its prompt scripts.
@@ -50,3 +58,17 @@ The same steps from the command line:
 The simulated buyer replays the recording's buyer lines in order, adapting only so they fit what the bot says. The bot runs the real production prompt, rendered with the call's variables (Jinja `{% if %}` blocks and `bot_name`-style placeholders). Its `@variable` updates are applied and its tools are stubbed (`SIM_BACKEND=local`). Set `SIM_BACKEND=samvaad` with `SAMVAAD_*` in `.env` to drive the real Sarvam agent instead. Both prompts are scored with the same audit sheet.
 
 **Limits:** it is a text simulation, so there are no STT or TTS errors (WER and dead air are N/A). Tool results are stubs.
+
+## Batches, auto-improve rounds, human review
+
+- **Upload batches** — every "Add files" / "Add folder" is one batch with its time. Upload and Issues
+  list calls grouped by batch, newest first; Issues can be filtered by batch.
+- **Auto-improve rounds** (`audit/refine.py`) — after a test, the corrected prompt is scored against the
+  recordings (Fatal 10 · Non-fatal 3 · +1 per failing parameter; lower is better). If it is worse — or no
+  better while the recordings had issues — it is revised from what went wrong in the replays, saved as the
+  next version and re-tested, up to `REFINE_MAX_ROUNDS` (default 3). ⑧ Results shows the chain, e.g.
+  `v3 · worse → v4 · no improvement → v5 · better`. `python -m audit.pipeline test --no-refine` tests once.
+- **Needs human review** — the grader gives each decision a confidence and lists what it could not decide.
+  A call is flagged only when that doubt could change its overall result (Pass / Non-fatal / Fatal):
+  a low-confidence (< `REVIEW_CONFIDENCE`, default 0.6) or "unsure" decision that alone decides the result,
+  or a fatal finding the second reviewer overturned. Your verdict in Quick view resolves it.

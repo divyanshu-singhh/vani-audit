@@ -43,7 +43,8 @@ FIX_MARKER = "If the buyer answers with a budget"
 
 def card(**bad):
     return [{"param": k, "status": bad.get(k, ("ok", ""))[0], "turn_index": 6, "quote": bad.get(k, ("", ""))[1],
-             "layer": "prompt", "note": f"note for {k}"} for k in rubric.PARAM_KEYS]
+             "layer": "prompt", "note": f"note for {k}", "confidence": 0.4 if k == "QTY_PROBING" else 0.9}
+            for k in rubric.PARAM_KEYS]
 
 
 def fake_json(system, user, schema, name, **kw):
@@ -110,6 +111,7 @@ def fake_msgs(messages, schema, name, **kw):
 
 
 llm.chat_json = fake_json
+llm.judge_json = fake_json  # grading decisions (gateway judge) stubbed too
 llm.chat_json_messages = fake_msgs
 config.GRADER_SAMPLES = 1
 db.init()
@@ -117,8 +119,10 @@ db.init()
 # ① upload  ② STT + saved copy
 samples = sorted((Path.home() / "Downloads").glob("call_*.mp3"))[:2]
 assert samples, "no sample mp3s in Downloads"
+batch = ingest.new_batch("upload", "smoke")
 for s in samples:
-    print("register", ingest.register(s))
+    print("register", ingest.register(s, batch))
+assert db.one("SELECT COUNT(*) n FROM calls WHERE batch_id=?", (batch,))["n"] == 2
 for c in db.rows("SELECT call_id FROM calls"):
     transcribe.store_transcript(c["call_id"], FAKE_STT, None)
 assert list(config.TRANSCRIPT_COPY_DIR.glob("*.txt")), "transcript copy not saved"
@@ -131,6 +135,14 @@ print("grade", g["grade"], "|", g["grade_reason"])
 assert g["grade"] == "FATAL" and sc["LOOPING"]["status"] == "fatal"
 assert sc["WRONG_INFO"]["status"] == "ok", "second review should have rejected WRONG_INFO"
 assert sc["DEAD_AIR"]["status"] == "non_fatal", sc["DEAD_AIR"]  # 7.5 s gap before turn 6
+print("manual review:", g["manual_review"], "|", " | ".join(g["review_reason"].splitlines()))
+# the call is FATAL on a confident LOOPING finding, so doubts on other parameters can't change it → no review
+assert g["manual_review"] == 0, g["review_reason"]
+# …but a low-confidence finding that alone decides the result does go to review
+only = [{"param": "SPEC_MISSED", "status": "non_fatal", "confidence": 0.4, "note": "x"},
+        {"param": "LOOPING", "status": "ok", "confidence": 0.9, "note": "x"}]
+assert any("low confidence" in r for r in grader.manual_review_reasons(only, {})), "deciding doubt not flagged"
+assert not grader.manual_review_reasons([dict(only[0], confidence=0.9), only[1]], {}), "confident call flagged"
 
 # ④ corrections  ⑤ corrected prompt
 analysis.run()
@@ -150,9 +162,21 @@ config.SIM_MAX_TURNS = 6
 run_id = simulate.run_test(vid, [r["case_id"] for r in db.rows("SELECT case_id FROM test_cases")])
 tr = db.one("SELECT * FROM test_runs WHERE run_id=?", (run_id,))
 summary = db.loads(tr["summary_json"])
-print("run", tr["status"], summary["original"]["param_fails"]["LOOPING"], "→", summary["corrected"]["param_fails"]["LOOPING"])
-assert tr["status"] == "done" and summary["errors"] == 0
-assert summary["original"]["param_fails"]["LOOPING"] > summary["corrected"]["param_fails"]["LOOPING"] == 0
+rec_loop = sum(1 for g_ in db.rows("SELECT scorecard_json FROM grades") for c in db.loads(g_["scorecard_json"])
+               if c["param"] == "LOOPING" and c["status"] != "ok")
+print("run", tr["status"], "recording LOOPING", rec_loop, "→ corrected", summary["corrected"]["param_fails"]["LOOPING"])
+assert tr["status"] == "done" and summary["errors"] == 0 and summary["original"]["n"] == 0
+assert rec_loop == 2 and summary["corrected"]["param_fails"]["LOOPING"] == 0
+
+# ⑧ auto-refine: a version WITHOUT the fix tests "same" as the recordings → revised (fake fix adds the
+#   budget rule) → re-tested → "better" → stop
+from audit import refine  # noqa: E402
+plain = fixes.save_version(config.BOT_PROMPT_PATH.read_text(encoding="utf-8").splitlines(), [], "unchanged copy")
+runs = refine.test_and_refine(plain, [r["case_id"] for r in db.rows("SELECT case_id FROM test_cases")], max_rounds=3)
+steps = [(x["version_id"], x["round"], x["verdict"]) for x in refine.chain(runs[-1])]
+print("refine rounds:", steps)
+assert len(runs) == 2 and steps[0][2] in ("same", "worse") and steps[1][2] == "better" and steps[1][0] != plain
+assert FIX_MARKER in Path(db.one("SELECT path FROM prompt_versions WHERE version_id=?", (steps[1][0],))["path"]).read_text(encoding="utf-8")
 
 # ⑦ manual test engine
 bot = simulate.new_manual_bot("corrected", vid, case["context"])
@@ -164,3 +188,20 @@ cid = db.one("SELECT call_id FROM calls")["call_id"]
 agreement.set_label(cid, "FATAL")
 print("agreement", {k: v for k, v in agreement.metrics().items() if k != "disagreements"})
 print("SMOKE OK")
+
+# clear history (smoke folders only — DATA_DIR/LOG_DIR redirected so real data is never touched)
+import sqlite3  # noqa: E402
+real_before = sqlite3.connect(ROOT / "data" / "audit.db").execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+config.DATA_DIR, config.LOG_DIR = SMOKE, SMOKE / "logs"
+config.LOG_DIR.mkdir(exist_ok=True)
+from audit import reset  # noqa: E402
+before = reset.counts()
+r = reset.clear_history(backup=True)
+print("clear history:", before, "→", reset.counts(), "| backup", Path(r["backup"]).name)
+assert all(v == 0 for v in reset.counts().values()) and before["calls"] == 2
+assert (Path(r["backup"]) / "audit.db").exists() and any((Path(r["backup"]) / config.AUDIO_DIR.name).iterdir())
+assert not any(config.AUDIO_DIR.iterdir()), "audio folder not emptied"
+b2 = ingest.new_batch("upload", "after clear")
+assert b2 == 1, f"batch numbering should restart at 1, got {b2}"
+assert sqlite3.connect(ROOT / "data" / "audit.db").execute("SELECT COUNT(*) FROM calls").fetchone()[0] == real_before
+print("CLEAR OK")
