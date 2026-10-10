@@ -1,0 +1,9 @@
+sarvamai==0.1.36
+streamlit==1.65.0
+rapidfuzz==3.14.6
+pydantic==2.14.0
+python-dotenv==1.2.4
+imageio-ffmpeg==0.6.0
+pandas==3.0.6
+plotly==7.1.0
+sarvam-conv-ai-sdk==1.1.1   # SIM_BACKEND=samvaad (real Sarvam agent, CHAT mode)

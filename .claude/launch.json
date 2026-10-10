@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "vani-audit",
+      "runtimeExecutable": "C:/Users/IndiaMart/vani-audit/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:/Users/IndiaMart/vani-audit/dashboard/app.py",
+        "--server.port",
+        "8501",
+        "--server.headless",
+        "true",
+        "--theme.base",
+        "light",
+        "--theme.primaryColor",
+        "#5B5BD6",
+        "--theme.backgroundColor",
+        "#F6F7FB",
+        "--theme.secondaryBackgroundColor",
+        "#FFFFFF",
+        "--theme.textColor",
+        "#1E2235"
+      ],
+      "port": 8501
+    }
+  ]
+}
