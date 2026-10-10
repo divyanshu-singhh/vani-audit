@@ -47,7 +47,7 @@ SCHEMA = {
         },
         "scorecard": {
             "type": "array",
-            "description": f"Exactly one entry per audit parameter, in this order: {', '.join(rubric.PARAM_KEYS)}",
+            "description": "Exactly one entry per audit parameter of the sheet, in the sheet's order",
             "items": {
                 "type": "object",
                 "properties": {
