@@ -63,12 +63,15 @@ SCHEMA = {
             },
         },
         "additional_observation": {"type": "string", "description": "Anything else (pronunciation, tone…), '' if none"},
-        "unsure_about": {
+        "uncovered_issues": {
             "type": "array",
-            "description": "Parameters where you could not decide between ok / non_fatal / fatal from the transcript "
-                           "(e.g. unclear audio, ambiguous buyer intent). Empty if you are sure of everything.",
-            "items": {"type": "object", "properties": {"param": {"type": "string", "enum": rubric.PARAM_KEYS},
-                                                       "why": {"type": "string"}}, "required": ["param", "why"]},
+            "description": "Serious problems in this call that NO audit parameter above covers (e.g. abusive or rude "
+                           "bot, sharing someone's personal data, legal / safety / consent problem, a call mishandled "
+                           "in a way none of the parameters captures). Empty for almost every call.",
+            "items": {"type": "object", "properties": {
+                "description": {"type": "string"}, "severity": {"type": "string", "enum": ["major", "minor"]},
+                "turn_index": {"type": ["integer", "null"]}, "quote": {"type": "string"}},
+                "required": ["description", "severity"]},
         },
         "risk_flags": {
             "type": "object",
@@ -96,9 +99,9 @@ How to audit:
 4. Do not invent problems. A clean call scores ok/na everywhere.
 5. risk_flags: wrong_requirement (captured ≠ stated), frustration (annoyed, repeats self), loop (bot repeats/circles),
    low_confidence (many unclear/garbled buyer turns), human_request (buyer asks for a person / refuses the bot).
-6. Give every non-na status a confidence (0-1). If the transcript does not let you decide between ok, non_fatal and
-   fatal for a parameter (unclear audio, ambiguous buyer intent, missing context), do NOT guess: give your best
-   status with low confidence AND list it in unsure_about with the reason. A human auditor will decide those.
+6. Give every non-na status a confidence (0-1): how sure you are of THAT status. Decide every parameter yourself —
+   use your best judgement; a low confidence is only for genuinely unclear evidence (e.g. inaudible or garbled turns).
+   uncovered_issues: only serious problems no parameter covers; leave empty otherwise. Do not repeat parameter issues there.
 7. root_cause_hypothesis: the underlying reason for the worst problem, phrased so it applies to other calls
    (e.g. "No instruction for buyers who answer the quantity question with a budget").
 """
@@ -180,13 +183,15 @@ def _consensus(system: str, user: str) -> dict:
         vals = sorted(int((o.get("ask_counts") or {}).get(f) or 0) for o in outs)
         asks[f] = vals[len(vals) // 2]
     base = outs[0]
-    unsure = {}
+    uncovered, seen = [], set()
     for o in outs:
-        for u in o.get("unsure_about") or []:
-            if u.get("param") in rubric.PARAM_NAMES:
-                unsure.setdefault(u["param"], u.get("why", ""))
+        for u in o.get("uncovered_issues") or []:
+            key = (u.get("description") or "").strip().lower()[:80]
+            if key and key not in seen:
+                seen.add(key)
+                uncovered.append(u)
     return dict(base, scorecard=card, risk_flags=flags, ask_counts=asks, samples=len(outs),
-                unsure_about=[{"param": k, "why": v} for k, v in unsure.items()])
+                uncovered_issues=uncovered)
 
 
 def _apply_rules(card: list[dict], out: dict, sig: dict, turns: list[dict]):
@@ -341,44 +346,24 @@ def grade_turns(turns: list[dict], sig: dict, note: str = "") -> dict:
             "confidence": conf, "needs_review": needs_review, "manual_review": manual}
 
 
-_NEIGHBOURS = {"ok": ["non_fatal"], "na": ["non_fatal"], "non_fatal": ["ok", "fatal"], "fatal": ["non_fatal", "ok"]}
-
-
-def _could_change_result(card: list[dict], param: str) -> bool:
-    """Would a one-step different decision on this parameter change the call's overall result?"""
-    current = overall(card)
-    c = next((x for x in card if x["param"] == param), None)
-    if not c:
-        return False
-    for alt in _NEIGHBOURS.get(c["status"], []):
-        if (alt == "non_fatal" and param in rubric.NO_NON_FATAL) or (alt == "fatal" and param in rubric.NO_FATAL):
-            continue
-        if overall([dict(x, status=alt) if x is c else x for x in card]) != current:
-            return True
-    return False
-
-
 def manual_review_reasons(card: list[dict], out: dict) -> list[str]:
-    """When the grader can't confidently decide Pass / Non-fatal / Fatal for the CALL, a human should.
-    Doubts that cannot change the overall result (e.g. one of several fatal issues) are not escalated."""
-    doubts: list[tuple[str, str]] = []
-    for u in out.get("unsure_about") or []:
-        doubts.append((u["param"], f"grader unsure — {u.get('why', '')}".strip(" —")))
-    for c in card:
-        conf = c.get("confidence")
-        if c.get("source") != "rule" and conf is not None and c["status"] in ("fatal", "non_fatal") \
-                and conf < config.REVIEW_CONFIDENCE:
-            doubts.append((c["param"], f"{c['status'].replace('_', '-')} with low confidence ({conf:.0%})"))
-        if len(set(v for v in c.get("votes") or [] if v != "na")) > 1:
-            doubts.append((c["param"], f"split decision {'/'.join(c['votes'])}"))
-        if c["status"] == "fatal" and not c.get("verified", c.get("source") == "rule"):
-            doubts.append((c["param"], "fatal, but its quoted evidence was not found in the transcript"))
-    reasons = [f"{rubric.PARAM_NAMES.get(p, p)}: {why}" for p, why in doubts if _could_change_result(card, p)]
-    for c in card:  # the reviewer overturned a fatal finding and that alone moved the call's result
-        if c.get("disputed") and overall([dict(x, status="fatal") if x is c else x for x in card]) != overall(card):
-            reasons.append(f"{rubric.PARAM_NAMES.get(c['param'], c['param'])}: auditor said fatal, reviewer said "
-                           f"{c['disputed'].split('→')[-1].strip()} — this decides the call's result")
-    return list(dict.fromkeys(reasons))
+    """A human is needed only when the bot cannot stand behind its verdict:
+      1. a MAJOR problem was found that no audit parameter covers, or
+      2. the call's result rests entirely on low-confidence findings (every finding that makes it Fatal /
+         Non-fatal is below REVIEW_CONFIDENCE).
+    Everything else — including findings the second reviewer overturned — is decided by the bot."""
+    reasons = []
+    for u in out.get("uncovered_issues") or []:
+        if u.get("severity") == "major" and (u.get("description") or "").strip():
+            reasons.append(f"Not covered by the audit sheet: {u['description'].strip()}")
+    grade = overall(card)
+    deciding = [c for c in card if c["status"] == {"FATAL": "fatal", "NON_FATAL": "non_fatal"}.get(grade)
+                and c.get("source") != "rule"]
+    confs = [c.get("confidence") for c in deciding]
+    if deciding and all(isinstance(x, (int, float)) and x < config.REVIEW_CONFIDENCE for x in confs):
+        found = ", ".join(f"{rubric.PARAM_NAMES.get(c['param'], c['param'])} ({c['confidence']:.0%})" for c in deciding)
+        reasons.append(f"The {grade.replace('_', '-').lower()} result rests only on low-confidence findings: {found}")
+    return reasons
 
 
 def refresh_review(call_id: str) -> list[str]:

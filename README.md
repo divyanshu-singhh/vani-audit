@@ -68,7 +68,7 @@ The simulated buyer replays the recording's buyer lines in order, adapting only 
   better while the recordings had issues — it is revised from what went wrong in the replays, saved as the
   next version and re-tested, up to `REFINE_MAX_ROUNDS` (default 3). ⑧ Results shows the chain, e.g.
   `v3 · worse → v4 · no improvement → v5 · better`. `python -m audit.pipeline test --no-refine` tests once.
-- **Needs human review** — the grader gives each decision a confidence and lists what it could not decide.
-  A call is flagged only when that doubt could change its overall result (Pass / Non-fatal / Fatal):
-  a low-confidence (< `REVIEW_CONFIDENCE`, default 0.6) or "unsure" decision that alone decides the result,
-  or a fatal finding the second reviewer overturned. Your verdict in Quick view resolves it.
+- **Needs human review** — only when the bot cannot stand behind its verdict: (1) it found a MAJOR problem
+  that no audit parameter covers (shown as "Outside audit sheet"), or (2) the call's result rests entirely on
+  findings below `REVIEW_CONFIDENCE` (default 0.5). Everything else, including findings the second reviewer
+  overturned, is decided automatically. Your verdict in Quick view resolves a flagged call.

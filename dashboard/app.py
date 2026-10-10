@@ -256,8 +256,8 @@ def call_view(call_id: str):
         reasons = "".join(f"<li>{html.escape(x)}</li>" for x in (g["review_reason"] or "").splitlines() if x)
         status = (f"Resolved — your verdict: <b>{RESULT[c['human']][0]}</b>" if c["human"] in RESULT
                   else "Open <b>Your verdict</b> below and decide Pass / Non-fatal / Fatal.")
-        st.markdown(f"<div class='review-box'>{pill('Needs human review', 'p-review')} The grader could not decide "
-                    f"confidently:<ul style='margin:.3rem 0 .2rem 1rem'>{reasons}</ul><span class='muted'>{status}"
+        st.markdown(f"<div class='review-box'>{pill('Needs human review', 'p-review')} The bot cannot stand "
+                    f"behind this verdict on its own:<ul style='margin:.3rem 0 .2rem 1rem'>{reasons}</ul><span class='muted'>{status}"
                     f"</span></div>", unsafe_allow_html=True)
     st.audio(call["audio_path"])
     t1, t2, t3, t4 = st.tabs(["Scorecard", "Transcript", "Buyer vs bot", "Your verdict"])
@@ -265,6 +265,12 @@ def call_view(call_id: str):
         if g:
             issue_cards(db.loads(g["scorecard_json"], []) or [], turns)
             raw = db.loads(g["raw_json"], {}) or {}
+            for u in raw.get("uncovered_issues") or []:
+                st.markdown(f"<div class='issue {'fatal' if u.get('severity') == 'major' else ''}'>"
+                            f"{pill('Outside audit sheet · ' + (u.get('severity') or ''), 'p-review')} "
+                            f"{html.escape(u.get('description') or '')}"
+                            + (f"<div class='q'>“{html.escape(u['quote'])}”</div>" if u.get("quote") else "")
+                            + "</div>", unsafe_allow_html=True)
             if raw.get("additional_observation"):
                 st.info(f"Additional observation: {raw['additional_observation']}")
         else:
@@ -546,7 +552,7 @@ with tabs[2]:
         kpi(k[2], "Non-fatal", n_m, f"{n_m / len(graded):.0%} of audited", "minor")
         kpi(k[3], "Pass", n_p, f"{n_p / len(graded):.0%} of audited", "pass")
         k[4].markdown(f"<div class='kpi' style='border-top:4px solid #8B5CF6'><div class='lbl'>Needs review</div>"
-                      f"<div class='val'>{n_r}</div><div class='sub'>grader unsure — your call</div></div>",
+                      f"<div class='val'>{n_r}</div><div class='sub'>major gap outside the audit sheet / low confidence</div></div>",
                       unsafe_allow_html=True)
         st.write("")
 

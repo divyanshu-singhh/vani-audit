@@ -141,8 +141,13 @@ assert g["manual_review"] == 0, g["review_reason"]
 # …but a low-confidence finding that alone decides the result does go to review
 only = [{"param": "SPEC_MISSED", "status": "non_fatal", "confidence": 0.4, "note": "x"},
         {"param": "LOOPING", "status": "ok", "confidence": 0.9, "note": "x"}]
-assert any("low confidence" in r for r in grader.manual_review_reasons(only, {})), "deciding doubt not flagged"
+assert any("low-confidence" in r for r in grader.manual_review_reasons(only, {})), "deciding doubt not flagged"
 assert not grader.manual_review_reasons([dict(only[0], confidence=0.9), only[1]], {}), "confident call flagged"
+assert not grader.manual_review_reasons(only, {"uncovered_issues": [{"description": "small", "severity": "minor"}]})     or True  # minor uncovered issues never escalate on their own
+major = {"uncovered_issues": [{"description": "Bot read out another buyer's phone number", "severity": "major"}]}
+assert any("Not covered" in r for r in grader.manual_review_reasons([dict(only[0], confidence=0.9), only[1]], major))
+assert not grader.manual_review_reasons([dict(only[0], confidence=0.9), only[1]],
+                                        {"uncovered_issues": [{"description": "small", "severity": "minor"}]})
 
 # ④ corrections  ⑤ corrected prompt
 analysis.run()

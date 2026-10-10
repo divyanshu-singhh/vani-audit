@@ -44,7 +44,7 @@ JUDGE_REASONING = os.getenv("JUDGE_REASONING", "low")  # GPT-5: minimal | low | 
 GRADER_WORKERS = _int("GRADER_WORKERS", 4)
 GRADER_SAMPLES = _int("GRADER_SAMPLES", 1 if JUDGE_API_KEY else 3)  # votes per call (GPT/Sonnet: 1 is enough)
 GRADER_INCLUDE_FULL_PROMPT = os.getenv("GRADER_INCLUDE_FULL_PROMPT", "0") == "1"
-REVIEW_CONFIDENCE = float(os.getenv("REVIEW_CONFIDENCE", "0.6"))  # below this, a decision goes to human review
+REVIEW_CONFIDENCE = float(os.getenv("REVIEW_CONFIDENCE", "0.5"))  # result resting only on findings below this → human review
 REFINE_MAX_ROUNDS = _int("REFINE_MAX_ROUNDS", 3)  # corrected prompt worse? revise + re-test up to N times
 
 # Fix testing: replay failed calls against baseline vs fixed prompt.
