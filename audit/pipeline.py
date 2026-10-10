@@ -5,7 +5,6 @@
     python -m audit.pipeline version                         # 5: corrected copy of the prompt (selected fixes)
     python -m audit.pipeline testcases                       # 6: test setup from each recording
     python -m audit.pipeline test     [--version v1] [--cases fatal|all|<id,id>]   # 8: original vs corrected
-    python -m audit.pipeline improve  [--top 3]              # fix most frequent errors one by one, keep what helps
     python -m audit.pipeline all      [--folder ...]         # everything above
     python -m audit.pipeline retry | regrade
 """
@@ -15,7 +14,7 @@ import os
 import sys
 import time
 
-from . import analysis, config, db, fixes, grader, improve, ingest, simulate, transcribe
+from . import analysis, config, db, fixes, grader, ingest, simulate, transcribe
 
 LOCK = config.DATA_DIR / "pipeline.lock"
 log = logging.getLogger("pipeline")
@@ -97,7 +96,7 @@ def pick_cases(which: str) -> list[str]:
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("cmd", choices=["all", "process", "suggest", "version", "testcases", "test", "retry",
-                                   "regrade", "fixes", "improve"])
+                                   "regrade", "fixes"])
     p.add_argument("--folder", default=None, help="folder to scan (default: data/inbox)")
     p.add_argument("--top", type=int, default=5, help="corrections for the top-N root causes")
     p.add_argument("--rc", default=None, help="suggest a correction for this one root cause id")
@@ -107,7 +106,6 @@ def main(argv=None):
 
     _setup_logging()
     db.init()
-    improve.init()
     if is_running():
         log.error("another pipeline run is in progress (%s)", LOCK)
         return 1
@@ -142,9 +140,6 @@ def main(argv=None):
         if a.cmd in ("all", "testcases"):
             _step("Generating test setup")
             log.info("test cases: %d", simulate.build_test_cases())
-        if a.cmd == "improve":
-            _step(f"Auto-improve: top {a.top} errors")
-            log.info("improve session: %s", improve.run_session(a.top))
         if a.cmd in ("all", "test"):
             v = a.version or (fixes.latest_version() or {}).get("version_id")
             if not v:

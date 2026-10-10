@@ -154,22 +154,6 @@ print("run", tr["status"], summary["original"]["param_fails"]["LOOPING"], "→",
 assert tr["status"] == "done" and summary["errors"] == 0
 assert summary["original"]["param_fails"]["LOOPING"] > summary["corrected"]["param_fails"]["LOOPING"] == 0
 
-# auto-improve: LOOPING (most frequent) must be kept as new base; the next error is not reproducible → manual review
-from audit import improve  # noqa: E402
-improve.init()
-freq = improve.error_frequency()
-print("error frequency", [(e["param"], e["n_failing"], e["fixable"]) for e in freq])
-sid = improve.run_session(top_n=2)
-steps = db.rows("SELECT rank, param, status, reason, new_base_id FROM improve_steps WHERE session_id=? ORDER BY rank", (sid,))
-for st_ in steps:
-    print("  step", st_)
-assert steps[0]["param"] == "LOOPING" and steps[0]["status"] == "kept" and steps[0]["new_base_id"] == "base_v1", steps[0]
-assert steps[1]["status"] == "manual_review", steps[1]
-assert improve.current_base()["base_id"] == "base_v1"
-s2 = db.one("SELECT step_id, candidate_path FROM improve_steps WHERE rank=2 AND session_id=?", (sid,))
-if s2["candidate_path"]:
-    print("approved manually ->", improve.approve(s2["step_id"]))
-
 # ⑦ manual test engine
 bot = simulate.new_manual_bot("corrected", vid, case["context"])
 turns = [{"idx": 0, "role": "BOT", "text": bot.opener()["text"]}, {"idx": 1, "role": "BUYER", "text": "हां जी"}]

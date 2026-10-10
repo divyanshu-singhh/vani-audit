@@ -1,4 +1,4 @@
-"""VANI Call Quality — modern light dashboard.
+"""VANI Call Quality Audit — one tab per step, modern light UI.
 
     streamlit run dashboard/app.py
 """
@@ -16,73 +16,82 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from audit import agreement, config, db, improve, ingest, rubric, simulate, transcribe  # noqa: E402
+from audit import agreement, analysis, config, db, fixes, ingest, rubric, simulate, transcribe  # noqa: E402
 from audit.pipeline import LOCK, current_step, is_running  # noqa: E402
 
-st.set_page_config(page_title="VANI · Call Quality", page_icon="◉", layout="wide")
+st.set_page_config(page_title="VANI · Call Quality Audit", page_icon="◉", layout="wide")
 db.init()
-improve.init()
 
 # ─────────────────────────────── design tokens ───────────────────────────────
 INK, MUTED, LINE = "#1E2235", "#6B7085", "#E6E8F0"
 PRIMARY, PRIMARY_TINT = "#5B5BD6", "#EEF0FF"
-FATAL, FATAL_TINT = "#E5484D", "#FFEEEE"
-MINOR, MINOR_TINT = "#E59400", "#FFF5E1"
-PASS, PASS_TINT = "#2F9E6A", "#E7F7EE"
-NA, NA_TINT = "#8B8D98", "#F1F2F5"
+FATAL, MINOR, PASS = "#E5484D", "#E59400", "#2F9E6A"
 FONT = "Plus Jakarta Sans, Inter, system-ui, sans-serif"
 
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 html, body, [class*="st-"], .stMarkdown, button, input, textarea, select {{ font-family: {FONT} !important; }}
+[data-testid="stIconMaterial"], span[class*="material-symbols"], .material-icons, [data-testid="stExpanderToggleIcon"] {{ font-family: 'Material Symbols Rounded' !important; }}
 .stApp {{ background: #F6F7FB; }}
-.block-container {{ padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1360px; }}
+.block-container {{ padding-top: 1.3rem; padding-bottom: 3rem; max-width: 1360px; }}
 header[data-testid="stHeader"] {{ background: transparent; }}
 h1, h2, h3, h4 {{ font-family: {FONT} !important; letter-spacing: -0.02em; color: {INK}; }}
 
-/* cards */
-div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div > div.card-marker),
+/* capsule tabs */
+[data-testid="stTabs"] [role="tablist"] {{ gap: .45rem; flex-wrap: wrap; border-bottom: none !important;
+  box-shadow: none !important; padding: .2rem 0 .7rem; }}
+[data-testid="stTabs"] [role="tablist"]::after, [data-testid="stTabs"] [role="tablist"]::before {{ display:none !important; }}
+[data-testid="stTab"] {{ border-radius: 999px !important; border: 1px solid {LINE} !important; background: #FFFFFF;
+  padding: .4rem 1rem !important; height: auto !important; margin: 0 !important; transition: all .15s ease; }}
+[data-testid="stTab"]:hover {{ border-color: {PRIMARY} !important; }}
+[data-testid="stTab"] p {{ font-weight: 600 !important; font-size: .9rem !important; color: #454A5E; }}
+[data-testid="stTab"][aria-selected="true"] {{ background: {PRIMARY} !important; border-color: {PRIMARY} !important;
+  box-shadow: 0 4px 14px rgba(91,91,214,.28); }}
+[data-testid="stTab"][aria-selected="true"] p {{ color: #FFFFFF !important; }}
+[data-testid="stTab"]::after, [data-testid="stTab"]::before {{ display:none !important; }}
+
+/* cards, buttons, inputs */
 div[data-testid="stVerticalBlockBorderWrapper"] {{
   border-radius: 18px !important; border: 1px solid {LINE} !important; background: #FFFFFF;
-  box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.04);
-}}
-/* buttons & capsules */
+  box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.04); }}
 .stButton > button, .stDownloadButton > button, [data-testid="stPopover"] button {{
-  border-radius: 999px !important; font-weight: 600; padding: .35rem 1rem; border: 1px solid {LINE};
-}}
+  border-radius: 999px !important; font-weight: 600; border: 1px solid {LINE}; }}
 .stButton > button[kind="primary"] {{ background: {PRIMARY}; border-color: {PRIMARY}; }}
 [data-testid="stButtonGroup"] button {{ border-radius: 999px !important; font-weight: 600; }}
 [data-baseweb="select"] > div, .stTextInput input, .stNumberInput input {{ border-radius: 12px !important; }}
 [data-testid="stExpander"] details {{ border-radius: 14px; border: 1px solid {LINE}; background: #FFF; }}
+[data-testid="stFileUploaderDropzone"] {{ border-radius: 14px; background: #FAFBFF; }}
 
-/* custom bits */
+/* custom elements */
 .brand {{ display:flex; align-items:center; gap:.7rem; }}
-.brand .logo {{ width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,{PRIMARY},#8E7CF0);
+.brand .logo {{ width:40px; height:40px; border-radius:12px; background:linear-gradient(135deg,{PRIMARY},#8E7CF0);
   display:flex; align-items:center; justify-content:center; color:#fff; font-weight:800; font-size:18px; }}
-.brand .t1 {{ font-size:1.35rem; font-weight:800; color:{INK}; line-height:1.1; }}
+.brand .t1 {{ font-size:1.4rem; font-weight:800; color:{INK}; line-height:1.1; }}
 .brand .t2 {{ font-size:.82rem; color:{MUTED}; }}
+.sec-title {{ font-size:1.2rem; font-weight:800; color:{INK}; margin:.2rem 0 .1rem; }}
+.sec-hint {{ color:{MUTED}; font-size:.88rem; margin-bottom:.9rem; }}
+.title-sm {{ font-weight:700; font-size:1rem; color:{INK}; margin-bottom:.15rem; }}
+.muted {{ color:{MUTED}; font-size:.86rem; }}
 .pill {{ display:inline-flex; align-items:center; gap:.35rem; padding:.18rem .62rem; border-radius:999px;
   font-size:.78rem; font-weight:600; white-space:nowrap; }}
 .pill .dot {{ width:7px; height:7px; border-radius:50%; display:inline-block; }}
-.p-fatal {{ background:{FATAL_TINT}; color:{FATAL}; }} .p-fatal .dot {{ background:{FATAL}; }}
-.p-minor {{ background:{MINOR_TINT}; color:#A56A00; }} .p-minor .dot {{ background:{MINOR}; }}
-.p-pass {{ background:{PASS_TINT}; color:{PASS}; }} .p-pass .dot {{ background:{PASS}; }}
-.p-na {{ background:{NA_TINT}; color:{MUTED}; }} .p-na .dot {{ background:{NA}; }}
+.p-fatal {{ background:#FFEEEE; color:{FATAL}; }} .p-fatal .dot {{ background:{FATAL}; }}
+.p-minor {{ background:#FFF5E1; color:#A56A00; }} .p-minor .dot {{ background:{MINOR}; }}
+.p-pass {{ background:#E7F7EE; color:{PASS}; }} .p-pass .dot {{ background:{PASS}; }}
+.p-na {{ background:#F1F2F5; color:{MUTED}; }} .p-na .dot {{ background:#8B8D98; }}
 .p-brand {{ background:{PRIMARY_TINT}; color:{PRIMARY}; }} .p-brand .dot {{ background:{PRIMARY}; }}
 .chip {{ display:inline-block; padding:.12rem .55rem; margin:.12rem .2rem .12rem 0; border-radius:999px;
   background:#F3F4F8; color:#454A5E; font-size:.74rem; font-weight:500; }}
-.kpi {{ background:#fff; border:1px solid {LINE}; border-radius:18px; padding:1rem 1.1rem;
-  box-shadow:0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.04); height:100%; }}
-.kpi .lbl {{ color:{MUTED}; font-size:.8rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }}
-.kpi .val {{ font-size:2rem; font-weight:800; color:{INK}; line-height:1.15; margin-top:.25rem; }}
-.kpi .sub {{ font-size:.8rem; color:{MUTED}; margin-top:.15rem; }}
-.kpi.accent-fatal {{ border-top:4px solid {FATAL}; }} .kpi.accent-minor {{ border-top:4px solid {MINOR}; }}
-.kpi.accent-pass {{ border-top:4px solid {PASS}; }} .kpi.accent-brand {{ border-top:4px solid {PRIMARY}; }}
-.muted {{ color:{MUTED}; font-size:.86rem; }}
-.title-sm {{ font-weight:700; font-size:1.02rem; color:{INK}; margin-bottom:.2rem; }}
+.kpi {{ background:#fff; border:1px solid {LINE}; border-radius:18px; padding:.9rem 1.05rem; height:100%;
+  box-shadow:0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.04); }}
+.kpi .lbl {{ color:{MUTED}; font-size:.76rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }}
+.kpi .val {{ font-size:1.9rem; font-weight:800; color:{INK}; line-height:1.15; margin-top:.2rem; }}
+.kpi .sub {{ font-size:.8rem; color:{MUTED}; margin-top:.1rem; }}
+.kpi.a-fatal {{ border-top:4px solid {FATAL}; }} .kpi.a-minor {{ border-top:4px solid {MINOR}; }}
+.kpi.a-pass {{ border-top:4px solid {PASS}; }} .kpi.a-brand {{ border-top:4px solid {PRIMARY}; }}
 .clamp {{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; color:#454A5E;
-  font-size:.86rem; min-height:2.5em; }}
+  font-size:.85rem; min-height:2.5em; }}
 .meter {{ height:8px; border-radius:999px; background:#F0F1F6; overflow:hidden; }}
 .meter > span {{ display:block; height:100%; border-radius:999px; }}
 .issue {{ border-left:4px solid {MINOR}; background:#FFFDF7; border-radius:10px; padding:.55rem .75rem; margin:.35rem 0; }}
@@ -91,36 +100,31 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
 .bubble {{ padding:.5rem .8rem; border-radius:14px; margin:.3rem 0; max-width:88%; font-size:.9rem; line-height:1.45; }}
 .bubble.bot {{ background:{PRIMARY_TINT}; color:{INK}; border-top-left-radius:4px; }}
 .bubble.buyer {{ background:#F3F4F8; color:{INK}; margin-left:auto; border-top-right-radius:4px; }}
-.bubble .ts {{ font-size:.7rem; color:{MUTED}; margin-right:.4rem; font-weight:600; }}
+.bubble .ts {{ font-size:.7rem; color:{MUTED}; margin-right:.4rem; font-weight:700; }}
 .bubble .meta {{ display:block; font-size:.72rem; color:{MUTED}; margin-top:.25rem; }}
-.flow {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }}
-.flow .arrow {{ color:{MUTED}; }}
+.kv {{ display:grid; grid-template-columns: 9.5rem 1fr; gap:.35rem .8rem; font-size:.88rem; }}
+.kv .k {{ color:{MUTED}; }} .kv .v {{ color:{INK}; font-weight:600; }}
 </style>
 """, unsafe_allow_html=True)
 
 RESULT = {"FATAL": ("Fatal", "p-fatal"), "NON_FATAL": ("Non-fatal", "p-minor"), "PASS": ("Pass", "p-pass")}
 PSTATUS = {"fatal": ("Fatal", "p-fatal"), "non_fatal": ("Non-fatal", "p-minor"), "ok": ("OK", "p-pass"),
            "na": ("N/A", "p-na")}
-STEP_STATUS = {"kept": ("Kept as base", "p-pass"), "approved": ("Approved → base", "p-pass"),
-               "manual_review": ("Manual review", "p-minor"), "rejected": ("Rejected", "p-na"),
-               "error": ("Error", "p-fatal"), "correcting": ("Correcting…", "p-brand"),
-               "testing": ("Testing…", "p-brand")}
 CALL_STATE = {"new": ("Waiting", "p-na"), "transcribing": ("Transcribing", "p-brand"),
-              "transcribed": ("Transcribed", "p-brand"), "error": ("Error", "p-fatal")}
+              "transcribed": ("Transcribed", "p-brand"), "graded": ("Audited", "p-pass"), "error": ("Error", "p-fatal")}
 
 
+# ─────────────────────────────── helpers ───────────────────────────────
 def pill(text: str, cls: str) -> str:
-    return f"<span class='pill {cls}'><span class='dot'></span>{html.escape(text)}</span>"
+    return f"<span class='pill {cls}'><span class='dot'></span>{html.escape(str(text))}</span>"
 
 
-def result_pill(grade: str | None, status: str = "") -> str:
-    if grade in RESULT:
-        return pill(*RESULT[grade])
-    return pill(*CALL_STATE.get(status, (status or "—", "p-na")))
+def result_pill(grade, status="") -> str:
+    return pill(*RESULT[grade]) if grade in RESULT else pill(*CALL_STATE.get(status, (status or "—", "p-na")))
 
 
-def chips(items: list[str]) -> str:
-    return "".join(f"<span class='chip'>{html.escape(i)}</span>" for i in items)
+def chips(items) -> str:
+    return "".join(f"<span class='chip'>{html.escape(str(i))}</span>" for i in items)
 
 
 def mmss(sec) -> str:
@@ -128,8 +132,12 @@ def mmss(sec) -> str:
     return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
 
 
+def section(title: str, hint: str):
+    st.markdown(f"<div class='sec-title'>{title}</div><div class='sec-hint'>{hint}</div>", unsafe_allow_html=True)
+
+
 def kpi(col, label, value, sub="", accent="brand"):
-    col.markdown(f"<div class='kpi accent-{accent}'><div class='lbl'>{label}</div><div class='val'>{value}</div>"
+    col.markdown(f"<div class='kpi a-{accent}'><div class='lbl'>{label}</div><div class='val'>{value}</div>"
                  f"<div class='sub'>{sub}</div></div>", unsafe_allow_html=True)
 
 
@@ -139,7 +147,19 @@ def launch(*args: str):
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-def bubbles(turns: list[dict], meta: bool = False, height: int | None = 420):
+def busy() -> bool:
+    return is_running()
+
+
+def run_button(label, *args, key, help=None, primary=True, disabled=False, full=False):
+    if st.button(label, key=key, type="primary" if primary else "secondary", help=help,
+                 disabled=busy() or disabled, use_container_width=full):
+        launch(*args)
+        st.toast(f"Started: {label}")
+        st.rerun()
+
+
+def bubbles(turns: list[dict], meta: bool = False, height: int | None = 420, times: bool = True):
     parts = []
     for t in turns:
         bot = t["role"] == "BOT"
@@ -148,7 +168,7 @@ def bubbles(turns: list[dict], meta: bool = False, height: int | None = 420):
             bits = [f"🔧 {c.get('name')}" for c in t.get("tools") or []] + \
                    [f"{k}={v}" for k, v in (t.get("vars") or {}).items()]
             m = f"<span class='meta'>{html.escape(' · '.join(bits))}</span>" if bits else ""
-        ts = f"<span class='ts'>{mmss(t['start'])}</span>" if "start" in t and not meta else ""
+        ts = f"<span class='ts'>{mmss(t['start'])}</span>" if times and "start" in t else ""
         parts.append(f"<div class='bubble {'bot' if bot else 'buyer'}'>{ts}{html.escape(t.get('text') or '…')}{m}</div>")
     box = st.container(height=height) if height else st.container()
     with box:
@@ -164,10 +184,9 @@ def issue_cards(card: list[dict], turns: list[dict] | None = None):
         if turns and isinstance(c.get("turn_index"), int) and 0 <= c["turn_index"] < len(turns):
             at = f" · at {mmss(turns[c['turn_index']]['start'])}"
         q = f"<div class='q'>“{html.escape(c['quote'])}”</div>" if c.get("quote") else ""
-        st.markdown(f"<div class='issue {'fatal' if c['status'] == 'fatal' else ''}'>"
-                    f"{pill(*PSTATUS[c['status']])} <b>{html.escape(rubric.PARAM_NAMES.get(c['param'], c['param']))}</b>"
-                    f"<span class='muted'>{at}</span><div>{html.escape(c.get('note') or '')}</div>{q}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(f"<div class='issue {'fatal' if c['status'] == 'fatal' else ''}'>{pill(*PSTATUS[c['status']])} "
+                    f"<b>{html.escape(rubric.PARAM_NAMES.get(c['param'], c['param']))}</b><span class='muted'>{at}</span>"
+                    f"<div>{html.escape(c.get('note') or '')}</div>{q}</div>", unsafe_allow_html=True)
     ok = [rubric.PARAM_NAMES[c["param"]] for c in card if c["status"] == "ok"]
     na = [rubric.PARAM_NAMES[c["param"]] for c in card if c["status"] == "na"]
     if ok:
@@ -177,33 +196,33 @@ def issue_cards(card: list[dict], turns: list[dict] | None = None):
                     unsafe_allow_html=True)
 
 
-# ─────────────────────────────── data ───────────────────────────────
 def load_calls() -> list[dict]:
     rows = db.rows("SELECT c.call_id, c.filename, c.duration_sec, c.status, c.error, g.grade, g.summary,"
-                   " g.scorecard_json, h.label AS human FROM calls c LEFT JOIN grades g USING(call_id)"
-                   " LEFT JOIN human_labels h USING(call_id) ORDER BY c.added_at DESC")
+                   " g.grade_reason, g.scorecard_json, h.label AS human FROM calls c LEFT JOIN grades g USING(call_id)"
+                   " LEFT JOIN human_labels h USING(call_id) ORDER BY c.added_at")
     for r in rows:
         r["card"] = db.loads(r["scorecard_json"], []) or []
         r["bad"] = [c for c in r["card"] if c["status"] in ("fatal", "non_fatal")]
     return rows
 
 
-calls = load_calls()
-graded = [c for c in calls if c["grade"]]
-busy = is_running()
-base = improve.current_base()
+def call_label(r) -> str:
+    return f"{Path(r['filename']).stem}  ·  {RESULT.get(r['grade'], CALL_STATE.get(r['status'], ('—',)))[0]}"
 
-# ─────────────────────────────── dialogs ───────────────────────────────
+
+calls = load_calls()
+
+
+# ─────────────────────────────── quick views ───────────────────────────────
 @st.dialog("Call details", width="large")
-def quick_view(call_id: str):
+def call_view(call_id: str):
     c = next(x for x in calls if x["call_id"] == call_id)
     call = db.one("SELECT * FROM calls WHERE call_id=?", (call_id,))
     tr = db.one("SELECT * FROM transcripts WHERE call_id=?", (call_id,))
     g = db.one("SELECT * FROM grades WHERE call_id=?", (call_id,))
     turns = db.loads(tr["turns_json"], []) if tr else []
-    st.markdown(f"<div class='title-sm'>{html.escape(c['filename'])}</div>"
-                f"{result_pill(c['grade'], c['status'])} <span class='muted'>· {mmss(c['duration_sec'])} · "
-                f"{len(turns)} turns</span>", unsafe_allow_html=True)
+    st.markdown(f"<div class='title-sm'>{html.escape(c['filename'])}</div>{result_pill(c['grade'], c['status'])} "
+                f"<span class='muted'>· {mmss(c['duration_sec'])} · {len(turns)} turns</span>", unsafe_allow_html=True)
     if g and g["summary"]:
         st.markdown(f"<p class='muted' style='margin-top:.5rem'>{html.escape(g['summary'])}</p>", unsafe_allow_html=True)
     st.audio(call["audio_path"])
@@ -211,13 +230,13 @@ def quick_view(call_id: str):
     with t1:
         if g:
             issue_cards(db.loads(g["scorecard_json"], []) or [], turns)
+            raw = db.loads(g["raw_json"], {}) or {}
+            if raw.get("additional_observation"):
+                st.info(f"Additional observation: {raw['additional_observation']}")
         else:
-            st.info("Not audited yet.")
+            st.caption("Not audited yet.")
     with t2:
         bubbles(turns, height=420)
-        txt = transcribe.export_copy(call_id) if tr else None
-        if txt and txt.exists():
-            st.download_button("Download transcript", txt.read_bytes(), file_name=txt.name)
     with t3:
         req = db.loads(g["requirement_json"], {}) if g else {}
         fields = sorted(set((req.get("stated") or {}) | (req.get("captured") or {})))
@@ -231,447 +250,607 @@ def quick_view(call_id: str):
     with t4:
         h = db.one("SELECT * FROM human_labels WHERE call_id=?", (call_id,))
         opts = ["PASS", "NON_FATAL", "FATAL"]
-        lab = st.segmented_control("Your verdict", opts, format_func=lambda o: RESULT[o][0],
-                                   default=h["label"] if h and h["label"] in opts else None, key=f"v_{call_id}")
-        notes = st.text_input("Notes", value=h["notes"] if h else "", key=f"n_{call_id}")
-        if st.button("Save verdict", type="primary", disabled=not lab):
+        lab = st.segmented_control("Overall", opts, format_func=lambda o: RESULT[o][0],
+                                   default=h["label"] if h and h["label"] in opts else None, key=f"lab_{call_id}")
+        notes = st.text_input("Notes", value=h["notes"] if h else "", key=f"notes_{call_id}")
+        if st.button("Save verdict", type="primary", disabled=not lab, key=f"save_{call_id}"):
             agreement.set_label(call_id, lab, notes, "dashboard")
             st.success("Saved")
-        if tr and st.button("Bot and buyer swapped? Swap and re-audit"):
-            transcribe.swap_speakers(call_id)
-            launch("process")
-            st.rerun()
 
 
-@st.dialog("Improvement step", width="large")
-def step_view(step_id: int):
-    s = db.one("SELECT * FROM improve_steps WHERE step_id=?", (step_id,))
-    m = db.loads(s["metrics_json"], {}) or {}
-    name = rubric.PARAM_NAMES.get(s["param"], s["param"])
-    st.markdown(f"<div class='title-sm'>#{s['rank']} · {html.escape(name)}</div>"
-                f"{pill(*STEP_STATUS.get(s['status'], (s['status'], 'p-na')))} "
-                f"<span class='muted'>· base {s['base_id']}{' → ' + s['new_base_id'] if s['new_base_id'] else ''}</span>",
+@st.dialog("Prompt change", width="large")
+def fix_view(fix_id: str):
+    f = db.one("SELECT f.*, r.name, r.rank FROM fixes f JOIN root_causes r USING(rc_id) WHERE fix_id=?", (fix_id,))
+    st.markdown(f"<div class='title-sm'>#{f['rank']} · {html.escape(f['name'])}</div>"
+                f"<p>{html.escape(f['summary'] or '')}</p><p class='muted'>{html.escape(f['rationale'] or '')}</p>",
                 unsafe_allow_html=True)
-    st.markdown(f"<p style='margin-top:.6rem'><b>{html.escape(s['summary'] or '')}</b><br>"
-                f"<span class='muted'>{html.escape(s['reason'] or '')}</span></p>", unsafe_allow_html=True)
-    t1, t2, t3 = st.tabs(["Audit output", "Prompt change", "Replayed calls"])
-    with t1:
-        if not m:
-            st.caption("No test results.")
-        else:
-            rows = [{"Measure": f"'{name}' in replays", "Current base": m["target"]["before"],
-                     "With correction": m["target"]["after"]},
-                    {"Measure": "Fatal calls", "Current base": m["fatal"]["before"], "With correction": m["fatal"]["after"]}]
-            for k, d in m["params"].items():
-                if k != s["param"] and (d["before"] or d["after"]):
-                    rows.append({"Measure": rubric.PARAM_NAMES[k], "Current base": d["before"], "With correction": d["after"]})
-            df = pd.DataFrame(rows)
-            df["Change"] = df.apply(lambda r: "better" if r["With correction"] < r["Current base"] else
-                                    "worse" if r["With correction"] > r["Current base"] else "same", axis=1)
-            st.dataframe(df, hide_index=True, use_container_width=True)
-            st.caption(f"{m['usable']} of {m['cases']} calls replayed successfully with both prompts.")
-    with t2:
-        st.caption(s["rationale"] or "")
-        st.code(s["diff"] or "(no change)", language="diff")
-        if s["candidate_path"] and Path(s["candidate_path"]).exists():
-            st.download_button("Download corrected prompt", Path(s["candidate_path"]).read_bytes(),
-                               file_name=Path(s["candidate_path"]).name)
-    with t3:
-        sims = db.rows("SELECT * FROM sim_results WHERE run_id=? ORDER BY case_id, variant", (s["run_id"],)) if s["run_id"] else []
-        by = {}
-        for r in sims:
-            by.setdefault(r["case_id"], {})[r["variant"]] = r
-        if not by:
-            st.caption("No replays.")
-        for cid, p in by.items():
-            title = (db.one("SELECT filename FROM calls WHERE call_id=?", (cid,)) or {}).get("filename", cid)
-            o, n = p.get("original"), p.get("corrected")
-            with st.expander(f"{title} — base {RESULT.get((o or {}).get('grade'), ('…',))[0]} → "
-                             f"corrected {RESULT.get((n or {}).get('grade'), ('…',))[0]}"):
-                a, b = st.columns(2)
-                for col, r, label in ((a, o, "Current base"), (b, n, "With correction")):
-                    with col:
-                        st.markdown(f"**{label}**")
-                        if not r:
-                            continue
-                        if r["error"]:
-                            st.error(r["error"])
-                            continue
-                        bad = [c for c in db.loads(r["scorecard_json"], []) if c["status"] in ("fatal", "non_fatal")]
-                        st.markdown(" ".join(pill(f"{rubric.PARAM_NAMES[c['param']]}", PSTATUS[c['status']][1])
-                                             for c in bad) or pill("All OK", "p-pass"), unsafe_allow_html=True)
-                        bubbles(db.loads(r["turns_json"], []), meta=True, height=320)
-    if s["status"] == "manual_review":
-        st.divider()
-        c1, c2, _ = st.columns([1.3, 1, 3])
-        if c1.button("Approve → make base", type="primary", disabled=not s["candidate_path"]):
-            bid = improve.approve(step_id)
-            st.success(f"New base prompt: {bid}")
-            st.rerun()
-        if c2.button("Reject"):
-            improve.reject(step_id)
-            st.rerun()
+    extra = db.loads(f["edits_json"], {}) or {}
+    for d in extra.get("diagnosis", [])[:3]:
+        st.markdown(f"<div class='muted'>Line {d.get('line_start')}: {html.escape(d.get('why', ''))}</div>",
+                    unsafe_allow_html=True)
+    st.code(f["diff"] or "(no applicable change)", language="diff")
 
 
-# ─────────────────────────────── header + nav ───────────────────────────────
+@st.dialog("Test case", width="large")
+def case_view(case_id: str):
+    r = db.one("SELECT t.title, t.case_json, g.grade FROM test_cases t LEFT JOIN grades g ON g.call_id=t.case_id"
+               " WHERE t.case_id=?", (case_id,))
+    case = db.loads(r["case_json"], {})
+    ctx = case.get("context", {})
+    st.markdown(f"<div class='title-sm'>{html.escape(r['title'])}</div>recording was {result_pill(r['grade'])}",
+                unsafe_allow_html=True)
+    a, b = st.columns(2, gap="large")
+    with a:
+        st.markdown("**Bot starts with**")
+        st.info(ctx.get("initial_message") or "—")
+        specs = "; ".join(f"{k}: {', '.join(v)}" for k, v in (ctx.get("specification_options") or {}).items())
+        st.markdown(f"<div class='kv'><div class='k'>Flow</div><div class='v'>{ctx.get('flow')}</div>"
+                    f"<div class='k'>Product</div><div class='v'>{html.escape(ctx.get('product_name') or '—')}</div>"
+                    f"<div class='k'>Language</div><div class='v'>{ctx.get('language_name')}</div>"
+                    f"<div class='k'>Live seller</div><div class='v'>{'Yes' if ctx.get('live_seller_available') else 'No'}</div>"
+                    f"<div class='k'>Quantity units</div><div class='v'>{html.escape(', '.join(ctx.get('quantity_unit_options') or []))}</div>"
+                    f"<div class='k'>Specifications</div><div class='v'>{html.escape(specs or '—')}</div></div>",
+                    unsafe_allow_html=True)
+        st.markdown("**The bot must**")
+        for chk in case.get("checks", []):
+            st.markdown(f"- {chk}")
+    with b:
+        st.markdown("**Simulated buyer says (from the recording)**")
+        for n, line in enumerate(case.get("buyer_script", []), 1):
+            st.markdown(f"<div class='bubble buyer' style='max-width:100%'><span class='ts'>{n}</span>"
+                        f"{html.escape(line)}</div>", unsafe_allow_html=True)
+        st.markdown("**Buyer behaviour**")
+        st.caption(case.get("buyer_behaviour") or "—")
+    st.download_button("Download test case (.json)", json.dumps(case, ensure_ascii=False, indent=1),
+                       file_name=f"{Path(r['title']).stem}_testcase.json")
+
+
+# ─────────────────────────────── header ───────────────────────────────
 h1, h2 = st.columns([3, 2], vertical_alignment="center")
-with h1:
-    st.markdown(f"<div class='brand'><div class='logo'>V</div><div><div class='t1'>VANI Call Quality</div>"
-                f"<div class='t2'>Audit · auto-improve · test — IndiaMART buyer voice bot</div></div></div>",
-                unsafe_allow_html=True)
+h1.markdown("<div class='brand'><div class='logo'>V</div><div><div class='t1'>VANI Call Quality Audit</div>"
+            "<div class='t2'>Upload → transcripts → issues → corrections → corrected prompt → test setup → "
+            "manual & automated tests → before vs after</div></div></div>", unsafe_allow_html=True)
 
 
 @st.fragment(run_every=3)
-def live_status():
-    running = is_running()
-    if running:
+def status_bar():
+    if busy():
         st.markdown(f"<div style='text-align:right'>{pill('Running · ' + (current_step() or 'working'), 'p-brand')}</div>",
                     unsafe_allow_html=True)
-        st.session_state["_busy"] = True
+        st.session_state["_was_busy"] = True
     else:
         if LOCK.exists():
             LOCK.unlink(missing_ok=True)
-        st.markdown(f"<div style='text-align:right'>{pill('Base prompt · ' + base['base_id'], 'p-brand')} "
-                    f"{pill('Idle', 'p-na')}</div>", unsafe_allow_html=True)
-        if st.session_state.pop("_busy", False):
+        st.markdown(f"<div style='text-align:right'>{pill('Idle', 'p-na')}</div>", unsafe_allow_html=True)
+        if st.session_state.pop("_was_busy", False):
             st.rerun()
 
 
 with h2:
-    live_status()
+    status_bar()
 
 if not config.SARVAM_API_KEY:
-    st.error("SARVAM_API_KEY is not set. Add it to `.env` and restart.")
+    st.error("SARVAM_API_KEY is not set. Copy `.env.example` to `.env` and add your Sarvam key, then restart.")
 
-PAGES = ["Overview", "Calls", "Auto-improve", "Test lab", "Criteria"]
-if "_goto" in st.session_state:
-    st.session_state["nav"] = st.session_state.pop("_goto")
-st.session_state.setdefault("nav", "Overview")
-page = st.segmented_control("Navigation", PAGES, key="nav", label_visibility="collapsed") or "Overview"
-st.write("")
+tabs = st.tabs(["① Upload", "② Transcripts", "③ Issues", "④ Corrections", "⑤ Corrected prompt",
+                "⑥ Test setup", "⑦ Manual test", "⑧ Results", "Audit criteria"])
 
-# ─────────────────────────────── OVERVIEW ───────────────────────────────
-if page == "Overview":
-    n_f = sum(c["grade"] == "FATAL" for c in graded)
-    n_m = sum(c["grade"] == "NON_FATAL" for c in graded)
-    n_p = sum(c["grade"] == "PASS" for c in graded)
+# ─────────────────────────────── ① UPLOAD ───────────────────────────────
+with tabs[0]:
+    section("Upload call recordings", "Add one file or many, then Process: each call is transcribed (a copy of the "
+            "transcript is saved) and audited against the audit sheet.")
     pending = sum(c["status"] in ("new", "transcribed") for c in calls)
-    bases = db.rows("SELECT * FROM base_prompts ORDER BY CAST(SUBSTR(base_id, 7) AS INTEGER)")
-    k = st.columns(5)
-    kpi(k[0], "Recordings", len(calls), f"{pending} waiting to process" if pending else "all processed", "brand")
-    kpi(k[1], "Fatal", n_f, f"{n_f / len(graded):.0%} of audited" if graded else "—", "fatal")
-    kpi(k[2], "Non-fatal", n_m, f"{n_m / len(graded):.0%} of audited" if graded else "—", "minor")
-    kpi(k[3], "Pass", n_p, f"{n_p / len(graded):.0%} of audited" if graded else "—", "pass")
-    kpi(k[4], "Base prompt", base["base_id"].replace("base_", ""), f"{len(bases) - 1} correction(s) kept", "brand")
+    errors = sum(c["status"] == "error" for c in calls)
+    k = st.columns(4)
+    kpi(k[0], "Recordings", len(calls), "added so far")
+    kpi(k[1], "Waiting", pending, "to process", "minor" if pending else "brand")
+    kpi(k[2], "Audited", sum(c["status"] == "graded" for c in calls), "done", "pass")
+    kpi(k[3], "Errors", errors, "can be retried", "fatal" if errors else "brand")
     st.write("")
-
-    left, right = st.columns([3, 2], gap="medium")
-    with left:
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Most frequent errors</div><div class='muted'>Click a bar to see "
-                        "those calls</div>", unsafe_allow_html=True)
-            freq = improve.error_frequency()
-            if not freq:
-                st.caption("No errors found yet.")
-            else:
-                f = list(reversed(freq[:10]))
-                fat = [e["n_fatal"] for e in f]
-                minor = [e["n_failing"] - e["n_fatal"] for e in f]
-                names = [e["name"] for e in f]
-                fig = go.Figure()
-                fig.add_bar(y=names, x=fat, orientation="h", name="Fatal", marker_color=FATAL,
-                            hovertemplate="%{y}: %{x} fatal<extra></extra>", customdata=[e["param"] for e in f])
-                fig.add_bar(y=names, x=minor, orientation="h", name="Non-fatal", marker_color=MINOR,
-                            hovertemplate="%{y}: %{x} non-fatal<extra></extra>", customdata=[e["param"] for e in f])
-                fig.update_layout(barmode="stack", height=max(240, 36 * len(f) + 70), bargap=0.4,
-                                  margin=dict(l=0, r=8, t=8, b=0), plot_bgcolor="#fff", paper_bgcolor="#fff",
-                                  font=dict(family=FONT, color=INK, size=13), xaxis=dict(gridcolor="#F0F1F6",
-                                  title="Calls", dtick=1), legend=dict(orientation="h", y=1.1, x=0))
-                ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun", selection_mode="points",
-                                     key="freq_chart", config={"displayModeBar": False})
-                pts = (ev or {}).get("selection", {}).get("points", []) if ev else []
-                if pts:
-                    st.session_state["f_param"] = [pts[0].get("customdata")]
-                    st.session_state["_goto"] = "Calls"
-                    st.rerun()
-    with right:
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Next step</div>", unsafe_allow_html=True)
-            if pending:
-                st.markdown(f"<p class='muted'>{pending} recording(s) are waiting.</p>", unsafe_allow_html=True)
-                if st.button(f"Process {pending} recording(s)", type="primary", disabled=busy):
-                    launch("process"); st.rerun()
-            elif graded and any(e["fixable"] for e in improve.error_frequency()):
-                st.markdown("<p class='muted'>Fix the most frequent errors one by one; each correction is kept only "
-                            "if the audit improves.</p>", unsafe_allow_html=True)
-                if st.button("Run auto-improve (top 3)", type="primary", disabled=busy):
-                    launch("improve", "--top", "3"); st.session_state["_goto"] = "Auto-improve"; st.rerun()
-            else:
-                st.markdown("<p class='muted'>Add recordings in Calls.</p>", unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Prompt history</div>", unsafe_allow_html=True)
-            flow = " <span class='arrow'>→</span> ".join(
-                pill(b["base_id"].replace("base_", ""), "p-brand" if b["base_id"] == base["base_id"] else "p-na")
-                for b in bases)
-            st.markdown(f"<div class='flow'>{flow}</div>", unsafe_allow_html=True)
-            for b in bases[::-1][:4]:
-                st.markdown(f"<div class='muted' style='margin-top:.35rem'><b>{b['base_id']}</b> · "
-                            f"{html.escape(b['notes'] or '')}</div>", unsafe_allow_html=True)
-
-# ─────────────────────────────── CALLS ───────────────────────────────
-elif page == "Calls":
-    top = st.columns([3, 1.2, 1.2], vertical_alignment="center")
-    top[0].markdown("<div class='title-sm' style='font-size:1.25rem'>Calls</div>"
-                    f"<div class='muted'>{len(calls)} recordings · {len(graded)} audited</div>", unsafe_allow_html=True)
-    with top[1].popover("＋ Add recordings", use_container_width=True):
+    c1, c2 = st.columns(2, gap="medium")
+    with c1.container(border=True):
+        st.markdown("<div class='title-sm'>Upload files</div>", unsafe_allow_html=True)
         files = st.file_uploader("Audio files", type=sorted(e[1:] for e in ingest.AUDIO_EXTS),
-                                 accept_multiple_files=True)
+                                 accept_multiple_files=True, label_visibility="collapsed")
         if st.button("Add files", disabled=not files, type="primary"):
             new = sum(ingest.save_upload(f.name, f.getvalue())[1] for f in files)
-            st.success(f"Added {new} new"); st.rerun()
-        st.divider()
-        folder = st.text_input("Or a folder", placeholder=r"C:\...\call_recordings")
-        limit = st.number_input("How many (0 = all)", min_value=0, value=20, step=10)
-        if st.button("Add from folder", disabled=not folder):
+            st.success(f"Added {new} new recording(s); {len(files) - new} were already added.")
+            st.rerun()
+    with c2.container(border=True):
+        st.markdown("<div class='title-sm'>Add from a folder</div>", unsafe_allow_html=True)
+        folder = st.text_input("Folder", placeholder=r"C:\Users\IndiaMart\Downloads\call_recordings\call_recordings",
+                               label_visibility="collapsed")
+        fc = st.columns([1, 1], vertical_alignment="bottom")
+        limit = fc[0].number_input("How many (0 = all)", min_value=0, value=0, step=10)
+        if fc[1].button("Add folder", disabled=not folder, use_container_width=True):
             p = Path(folder.strip().strip('"'))
             if not p.is_dir():
-                st.error("Folder not found")
+                st.error("Folder not found.")
             else:
                 audio = sorted(x for x in p.rglob("*") if x.suffix.lower() in ingest.AUDIO_EXTS)
                 audio = audio[:int(limit)] if limit else audio
-                new = sum(ingest.register(a)[1] for a in audio)
-                st.success(f"Added {new} new"); st.rerun()
-    pending = sum(c["status"] in ("new", "transcribed") for c in calls)
-    errors = sum(c["status"] == "error" for c in calls)
-    with top[2]:
-        if st.button(f"▶ Process {pending}" if pending else "Nothing to process", type="primary",
-                     disabled=busy or not pending, use_container_width=True):
-            launch("process"); st.rerun()
-        if errors and st.button(f"↻ Retry {errors} failed", disabled=busy, use_container_width=True):
-            launch("retry"); st.rerun()
+                bar = st.progress(0.0, text="Adding…")
+                new = 0
+                for n, a in enumerate(audio, 1):
+                    new += ingest.register(a)[1]
+                    bar.progress(n / len(audio), text=f"Adding {n}/{len(audio)}")
+                st.success(f"Added {new} new recording(s) from {len(audio)} file(s).")
+                st.rerun()
 
-    f1, f2 = st.columns([1.4, 3], vertical_alignment="bottom")
-    with f1:
-        res = st.pills("Result", ["All", "Fatal", "Non-fatal", "Pass", "Pending"], default="All", key="f_result")
-    with f2:
-        params_seen = sorted({c["param"] for x in graded for c in x["bad"]}, key=lambda k: rubric.PARAM_KEYS.index(k))
-        sel_params = st.pills("Error", params_seen, selection_mode="multi", format_func=rubric.PARAM_NAMES.get,
-                              key="f_param")
-    q = st.text_input("Search", placeholder="Search file name or summary…", label_visibility="collapsed")
-
-    want = {"Fatal": "FATAL", "Non-fatal": "NON_FATAL", "Pass": "PASS"}.get(res or "All")
-    shown = [c for c in calls
-             if (res in (None, "All") or (res == "Pending" and not c["grade"]) or c["grade"] == want)
-             and (not sel_params or any(b["param"] in sel_params for b in c["bad"]))
-             and (not q or q.lower() in (c["filename"] + " " + (c["summary"] or "")).lower())]
-    st.markdown(f"<div class='muted' style='margin:.3rem 0 .6rem'>{len(shown)} call(s)</div>", unsafe_allow_html=True)
-    per_page = 12
-    page_n = st.session_state.get("calls_page", 1)
-    for i in range(0, min(len(shown), per_page * page_n), 3):
-        cols = st.columns(3, gap="small")
-        for col, c in zip(cols, shown[i:i + 3]):
-            with col.container(border=True):
-                st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                            f"<div class='title-sm' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                            f"max-width:65%'>{html.escape(Path(c['filename']).stem)}</div>"
-                            f"{result_pill(c['grade'], c['status'])}</div>"
-                            f"<div class='muted'>{mmss(c['duration_sec'])}"
-                            f"{' · you: ' + RESULT[c['human']][0] if c['human'] in RESULT else ''}</div>"
-                            f"<div class='clamp' style='margin:.45rem 0'>{html.escape(c['summary'] or c['error'] or '')}</div>"
-                            f"<div style='min-height:1.8rem'>{chips([rubric.PARAM_NAMES[b['param']] for b in c['bad']][:3])}</div>",
-                            unsafe_allow_html=True)
-                if st.button("Quick view", key=f"qv_{c['call_id']}", use_container_width=True):
-                    quick_view(c["call_id"])
-    if len(shown) > per_page * page_n and st.button("Show more"):
-        st.session_state["calls_page"] = page_n + 1
-        st.rerun()
-
-# ─────────────────────────────── AUTO-IMPROVE ───────────────────────────────
-elif page == "Auto-improve":
-    st.markdown("<div class='title-sm' style='font-size:1.25rem'>Auto-improve</div><div class='muted'>Most frequent "
-                "error first. Each correction is tested against the current base prompt and kept only if that error "
-                "drops, nothing else gets worse and fatal calls don't rise — otherwise it waits for your review.</div>",
-                unsafe_allow_html=True)
     st.write("")
-    left, right = st.columns([2, 3], gap="medium")
-    freq = improve.error_frequency()
-    with left:
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Errors by frequency</div>", unsafe_allow_html=True)
-            mx = max([e["n_failing"] for e in freq] or [1])
-            rank = 0
-            for e in freq:
-                rank += e["fixable"]
-                tag = pill(f"#{rank}", "p-brand") if e["fixable"] else pill("not prompt-fixable: " + e["why_not"], "p-na")
-                share = e["n_failing"] / mx
-                st.markdown(f"<div style='margin:.55rem 0'>{tag} <b>{html.escape(e['name'])}</b>"
-                            f"<span class='muted'> · {e['n_failing']} call(s), {e['n_fatal']} fatal</span>"
-                            f"<div class='meter' style='margin-top:.3rem'><span style='width:{share:.0%};background:"
-                            f"{FATAL if e['n_fatal'] else MINOR}'></span></div></div>", unsafe_allow_html=True)
-            if not freq:
-                st.caption("No errors yet — audit some calls first.")
-            st.write("")
-            n_fix = sum(e["fixable"] for e in freq)
-            top_n = st.pills("Errors to work through", [1, 2, 3, 5], default=min(3, max(1, n_fix)), key="imp_n")
-            if st.button(f"Run auto-improve on top {top_n or 1}", type="primary", disabled=busy or not n_fix,
-                         use_container_width=True):
-                launch("improve", "--top", str(top_n or 1)); st.rerun()
-            st.caption(f"Each error replays up to {config.SIM_CASES_PER_FIX} failing calls + "
-                       f"{improve.REGRESSION_CALLS} others, with both prompts (~1–2 min per error).")
-        with st.container(border=True):
-            st.markdown(f"<div class='title-sm'>Current base prompt · {base['base_id']}</div>"
-                        f"<div class='muted'>{html.escape(base['notes'] or '')}</div>", unsafe_allow_html=True)
-            p = Path(base["path"])
-            if p.exists():
-                st.download_button("Download base prompt", p.read_bytes(), file_name=p.name, use_container_width=True)
-    with right:
-        sessions = db.rows("SELECT * FROM improve_sessions ORDER BY session_id DESC")
-        if not sessions:
-            with st.container(border=True):
-                st.caption("No auto-improve run yet.")
-        for sess in sessions[:3]:
-            steps = db.rows("SELECT * FROM improve_steps WHERE session_id=? ORDER BY rank", (sess["session_id"],))
-            st.markdown(f"<div class='muted' style='margin:.2rem 0 .4rem'>Run {sess['session_id']} · "
-                        f"{sess['started_at'][:16].replace('T', ' ')} · {sess['start_base']} → "
-                        f"{sess['end_base'] or '…'}</div>", unsafe_allow_html=True)
-            for s in steps:
-                m = db.loads(s["metrics_json"], {}) or {}
-                with st.container(border=True):
-                    a, b = st.columns([4, 1.2], vertical_alignment="center")
-                    with a:
-                        st.markdown(f"{pill('#' + str(s['rank']), 'p-na')} "
-                                    f"<b>{html.escape(rubric.PARAM_NAMES.get(s['param'], s['param']))}</b> "
-                                    f"<span class='muted'>· {s['n_failing']} call(s)</span> "
-                                    f"{pill(*STEP_STATUS.get(s['status'], (s['status'], 'p-na')))}",
-                                    unsafe_allow_html=True)
-                        if m:
-                            t, fa = m["target"], m["fatal"]
-                            reg = ", ".join(rubric.PARAM_NAMES[k] for k in m.get("regressions", []))
-                            st.markdown(f"<div class='muted' style='margin-top:.35rem'>error in replays "
-                                        f"<b>{t['before']} → {t['after']}</b> · fatal <b>{fa['before']} → {fa['after']}</b>"
-                                        f"{' · worse: ' + html.escape(reg) if reg else ''}</div>", unsafe_allow_html=True)
-                        st.markdown(f"<div class='muted'>{html.escape(s['reason'] or s['summary'] or '')}</div>",
-                                    unsafe_allow_html=True)
-                    with b:
-                        if st.button("Details", key=f"sv_{s['step_id']}", use_container_width=True):
-                            step_view(s["step_id"])
+    bc = st.columns([1.4, 1.2, 4])
+    with bc[0]:
+        run_button(f"▶ Process {pending} recording(s)", "process", key="process", disabled=not pending, full=True,
+                   help="Speech-to-text (Sarvam saaras:v4) + issue detection")
+    with bc[1]:
+        if errors:
+            run_button(f"↻ Retry {errors} failed", "retry", key="retry", primary=False, full=True)
+    if calls:
+        flt = st.pills("Show", ["All", "Waiting", "Audited", "Error"], default="All", key="up_filter")
+        want = {"Waiting": ("new", "transcribing", "transcribed"), "Audited": ("graded",), "Error": ("error",)}
+        rows = [c for c in calls if flt in (None, "All") or c["status"] in want[flt]]
+        st.dataframe(pd.DataFrame({
+            "File": [r["filename"] for r in rows], "Length": [mmss(r["duration_sec"]) for r in rows],
+            "Status": [CALL_STATE.get(r["status"], (r["status"],))[0] for r in rows],
+            "Result": [RESULT.get(r["grade"], ("",))[0] for r in rows],
+            "Note": [r["error"] or "" for r in rows]}), hide_index=True, use_container_width=True)
+    else:
+        st.info("No recordings yet.")
 
-# ─────────────────────────────── TEST LAB ───────────────────────────────
-elif page == "Test lab":
-    mode = st.segmented_control("Mode", ["Chat as buyer", "Test cases"], default="Chat as buyer", key="tl_mode",
-                                label_visibility="collapsed")
-    bases = db.rows("SELECT * FROM base_prompts ORDER BY CAST(SUBSTR(base_id, 7) AS INTEGER)")
-    cands = db.rows("SELECT step_id, rank, param, candidate_path FROM improve_steps WHERE candidate_path IS NOT NULL"
-                    " ORDER BY step_id DESC")
-    prompts = {f"{b['base_id']}{' (original)' if b['base_id'] == 'base_v0' else ''}": b["path"] for b in bases}
-    prompts.update({f"candidate · step {c['step_id']} · {rubric.PARAM_NAMES.get(c['param'], c['param'])}":
-                    c["candidate_path"] for c in cands})
-    cases = db.rows("SELECT case_id, title, case_json FROM test_cases ORDER BY created_at DESC")
-    if mode == "Test cases":
-        if st.button("Generate test cases for audited calls", disabled=busy):
-            launch("testcases"); st.rerun()
-        if not cases:
-            st.info("No test cases yet.")
-        for i in range(0, len(cases), 2):
-            cols = st.columns(2)
-            for col, c in zip(cols, cases[i:i + 2]):
+# ─────────────────────────────── ② TRANSCRIPTS ───────────────────────────────
+with tabs[1]:
+    section("Transcripts", "Speech-to-text of each call with bot and buyer separated. A copy is saved in "
+            "data/transcripts_text/ and reused for test setup and simulation.")
+    tr_calls = [c for c in calls if c["status"] in ("transcribed", "graded")]
+    if not tr_calls:
+        st.info("No transcripts yet — process recordings in ① Upload.")
+    else:
+        pick = st.selectbox("Call", tr_calls, format_func=call_label, key="tr_pick")
+        cid = pick["call_id"]
+        call = db.one("SELECT * FROM calls WHERE call_id=?", (cid,))
+        tr = db.one("SELECT * FROM transcripts WHERE call_id=?", (cid,))
+        turns = db.loads(tr["turns_json"], [])
+        left, right = st.columns([2.2, 1], gap="medium")
+        with left.container(border=True):
+            st.audio(call["audio_path"])
+            bubbles(turns, height=560)
+        with right.container(border=True):
+            st.markdown(f"<div class='title-sm'>{html.escape(Path(call['filename']).stem)}</div>"
+                        f"{result_pill(pick['grade'], pick['status'])}", unsafe_allow_html=True)
+            st.markdown(f"<div class='kv' style='margin:.8rem 0'><div class='k'>Length</div><div class='v'>"
+                        f"{mmss(call['duration_sec'])}</div><div class='k'>Turns</div><div class='v'>{len(turns)} "
+                        f"({sum(t['role'] == 'BOT' for t in turns)} bot)</div><div class='k'>Language</div>"
+                        f"<div class='v'>{tr['language'] or '—'}</div></div>", unsafe_allow_html=True)
+            txt = transcribe.export_copy(cid)
+            if txt and txt.exists():
+                st.download_button("Transcript (.txt)", txt.read_bytes(), file_name=txt.name, use_container_width=True)
+                js = txt.with_suffix(".json")
+                st.download_button("Transcript (.json)", js.read_bytes(), file_name=js.name, use_container_width=True)
+            st.markdown("<div class='muted' style='margin-top:.8rem'>Bot and buyer the wrong way round?</div>",
+                        unsafe_allow_html=True)
+            if st.button("Swap and re-audit", use_container_width=True):
+                transcribe.swap_speakers(cid)
+                launch("process")
+                st.rerun()
+
+# ─────────────────────────────── ③ ISSUES ───────────────────────────────
+with tabs[2]:
+    section("Issues found", "Each call is scored on every audit-sheet parameter. Overall: Fatal if any parameter is "
+            "fatal, Non-fatal if any is non-fatal, otherwise Pass. Click Quick view for the full scorecard.")
+    graded = [c for c in calls if c["grade"]]
+    if not graded:
+        st.info("No audited calls yet.")
+    else:
+        n_f = sum(c["grade"] == "FATAL" for c in graded)
+        n_m = sum(c["grade"] == "NON_FATAL" for c in graded)
+        n_p = sum(c["grade"] == "PASS" for c in graded)
+        k = st.columns(4)
+        kpi(k[0], "Audited calls", len(graded), "scored on the audit sheet")
+        kpi(k[1], "Fatal", n_f, f"{n_f / len(graded):.0%} of audited", "fatal")
+        kpi(k[2], "Non-fatal", n_m, f"{n_m / len(graded):.0%} of audited", "minor")
+        kpi(k[3], "Pass", n_p, f"{n_p / len(graded):.0%} of audited", "pass")
+        st.write("")
+
+        counts = {key: {"fatal": 0, "non_fatal": 0} for key in rubric.PARAM_KEYS}
+        for c in graded:
+            for b in c["bad"]:
+                counts[b["param"]][b["status"]] += 1
+        freq = [(k_, v) for k_, v in counts.items() if v["fatal"] or v["non_fatal"]]
+        with st.container(border=True):
+            st.markdown("<div class='title-sm'>Which parameters fail most</div>", unsafe_allow_html=True)
+            if not freq:
+                st.markdown(pill("No parameter failed in any call", "p-pass"), unsafe_allow_html=True)
+            else:
+                freq.sort(key=lambda x: x[1]["fatal"] + x[1]["non_fatal"])
+                names = [rubric.PARAM_NAMES[k_] for k_, _ in freq]
+                fig = go.Figure()
+                fig.add_bar(y=names, x=[v["fatal"] for _, v in freq], orientation="h", name="Fatal", marker_color=FATAL,
+                            hovertemplate="%{y}: %{x} fatal<extra></extra>")
+                fig.add_bar(y=names, x=[v["non_fatal"] for _, v in freq], orientation="h", name="Non-fatal",
+                            marker_color=MINOR, hovertemplate="%{y}: %{x} non-fatal<extra></extra>")
+                fig.update_layout(barmode="stack", height=max(200, 36 * len(freq) + 70), bargap=0.4,
+                                  margin=dict(l=0, r=8, t=8, b=0), plot_bgcolor="#fff", paper_bgcolor="#fff",
+                                  font=dict(family=FONT, color=INK, size=13),
+                                  xaxis=dict(gridcolor="#F0F1F6", title="Calls", dtick=1),
+                                  legend=dict(orientation="h", y=1.12, x=0))
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        f1, f2 = st.columns([1.3, 3], vertical_alignment="bottom")
+        res = f1.pills("Result", ["All", "Fatal", "Non-fatal", "Pass"], default="All", key="iss_res")
+        seen = sorted({b["param"] for c in graded for b in c["bad"]}, key=rubric.PARAM_KEYS.index)
+        sel = f2.pills("Error", seen, selection_mode="multi", format_func=rubric.PARAM_NAMES.get, key="iss_err")
+        want = {"Fatal": "FATAL", "Non-fatal": "NON_FATAL", "Pass": "PASS"}.get(res or "All")
+        shown = [c for c in graded if (want is None or c["grade"] == want)
+                 and (not sel or any(b["param"] in sel for b in c["bad"]))]
+        st.markdown(f"<div class='muted' style='margin:.2rem 0 .5rem'>{len(shown)} call(s)</div>", unsafe_allow_html=True)
+        for i in range(0, len(shown), 3):
+            cols = st.columns(3, gap="small")
+            for col, c in zip(cols, shown[i:i + 3]):
+                with col.container(border=True):
+                    st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;gap:.5rem'>"
+                                f"<div class='title-sm' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"
+                                f"{html.escape(Path(c['filename']).stem)}</div>{result_pill(c['grade'])}</div>"
+                                f"<div class='muted'>{mmss(c['duration_sec'])}"
+                                f"{' · your verdict: ' + RESULT[c['human']][0] if c['human'] in RESULT else ''}</div>"
+                                f"<div class='clamp' style='margin:.45rem 0'>{html.escape(c['summary'] or '')}</div>"
+                                f"<div style='min-height:1.8rem'>"
+                                f"{chips([rubric.PARAM_NAMES[b['param']] for b in c['bad']][:3])}</div>",
+                                unsafe_allow_html=True)
+                    if st.button("Quick view", key=f"qv_{c['call_id']}", use_container_width=True):
+                        call_view(c["call_id"])
+
+# ─────────────────────────────── ④ CORRECTIONS ───────────────────────────────
+with tabs[3]:
+    section("Prompt corrections", "Failing calls are grouped into root causes; for each top cause a concrete prompt "
+            "change is suggested. Switch on the ones to include in the corrected prompt.")
+    n_issue_calls = sum(c["grade"] in ("FATAL", "NON_FATAL") for c in calls)
+    run_button("✨ Suggest corrections", "suggest", key="suggest", disabled=not n_issue_calls,
+               help="Group issues into root causes, then propose prompt changes for the top 5")
+    run_id = analysis.latest_run_id()
+    if run_id is None:
+        st.info("No suggestions yet. Audit some calls first, then click Suggest corrections.")
+    else:
+        rcs = db.rows("SELECT * FROM root_causes WHERE run_id=? ORDER BY rank", (run_id,))
+        fx = db.rows("SELECT f.*, r.name, r.rank FROM fixes f JOIN root_causes r USING(rc_id) WHERE r.run_id=?"
+                     " ORDER BY r.rank", (run_id,))
+        left, right = st.columns([2, 3], gap="medium")
+        with left.container(border=True):
+            st.markdown("<div class='title-sm'>Root causes</div><div class='muted'>Most impactful first</div>",
+                        unsafe_allow_html=True)
+            mx = max([r["priority"] for r in rcs] or [1]) or 1
+            for r in rcs:
+                st.markdown(f"<div style='margin:.6rem 0'>{pill('#' + str(r['rank']), 'p-brand')} "
+                            f"<b>{html.escape(r['name'])}</b><div class='muted'>{r['n_calls']} call(s) · "
+                            f"{r['n_fatal']} fatal · fix in: {r['layer']}</div><div class='meter' style='margin-top:.3rem'>"
+                            f"<span style='width:{r['priority'] / mx:.0%};background:{FATAL if r['n_fatal'] else MINOR}'>"
+                            f"</span></div></div>", unsafe_allow_html=True)
+            with st.expander("How priority is computed"):
+                st.code(analysis.PRIORITY_FORMULA, language=None)
+        with right:
+            st.markdown(f"<div class='title-sm'>Suggested corrections ({len(fx)})</div>", unsafe_allow_html=True)
+            for f in fx:
+                with st.container(border=True):
+                    a, b = st.columns([5, 1.6], vertical_alignment="center")
+                    a.markdown(f"{pill('#' + str(f['rank']), 'p-na')} <b>{html.escape(f['name'])}</b>"
+                               f"<div style='margin-top:.3rem'>{html.escape(f['summary'] or '')}</div>",
+                               unsafe_allow_html=True)
+                    current = bool(f["selected"] if f["selected"] is not None else 1) and f["status"] != "rejected"
+                    chosen = b.toggle("Include", value=current, key=f"sel{f['fix_id']}")
+                    if chosen != current:
+                        db.execute("UPDATE fixes SET selected=?, status=? WHERE fix_id=?",
+                                   (int(chosen), "proposed" if chosen else "rejected", f["fix_id"]))
+                    if b.button("View change", key=f"fv{f['fix_id']}", use_container_width=True):
+                        fix_view(f["fix_id"])
+            no_fix = [r for r in rcs if r["rc_id"] not in {f["rc_id"] for f in fx}]
+            if no_fix:
+                with st.container(border=True):
+                    pick = st.selectbox("Suggest a correction for another root cause", no_fix,
+                                        format_func=lambda r: f"#{r['rank']} · {r['name']}", key="rc_more")
+                    run_button("Suggest for this root cause", "fixes", "--rc", pick["rc_id"], key="one_fix",
+                               primary=False)
+
+# ─────────────────────────────── ⑤ CORRECTED PROMPT ───────────────────────────────
+with tabs[4]:
+    section("Corrected prompt", "A copy of the production prompt with the selected corrections applied. The original "
+            "is never changed.")
+    sel_fixes = db.rows("SELECT f.fix_id, r.name FROM fixes f JOIN root_causes r USING(rc_id)"
+                        " WHERE f.status != 'rejected' AND COALESCE(f.selected,1)=1"
+                        " AND r.run_id = (SELECT MAX(run_id) FROM analysis_runs) ORDER BY r.rank")
+    with st.container(border=True):
+        a, b = st.columns([4, 1.4], vertical_alignment="center")
+        a.markdown(f"<div class='title-sm'>Selected corrections · {len(sel_fixes)}</div>"
+                   f"{chips([x['name'] for x in sel_fixes]) or '<span class=muted>None selected in ④</span>'}",
+                   unsafe_allow_html=True)
+        if b.button("Create corrected prompt", type="primary", disabled=not sel_fixes or busy(), use_container_width=True):
+            vid = fixes.build_version()
+            st.toast(f"Created {vid}")
+            st.rerun()
+    versions = db.rows("SELECT * FROM prompt_versions ORDER BY created_at DESC")
+    if not versions:
+        st.info("No corrected prompt yet.")
+    else:
+        vids = [v["version_id"] for v in versions]
+        vid = st.pills("Version", vids, default=vids[0], key="ver_pick") or vids[0]
+        v = next(x for x in versions if x["version_id"] == vid)
+        p = Path(v["path"])
+        left, right = st.columns([1, 3], gap="medium")
+        with left.container(border=True):
+            st.markdown(f"<div class='title-sm'>{v['version_id']}</div><div class='muted'>"
+                        f"{v['created_at'][:16].replace('T', ' ')}</div>", unsafe_allow_html=True)
+            kpi(st, "Corrections", len(db.loads(v["fix_ids"], [])), "applied")
+            st.write("")
+            if p.exists():
+                st.download_button("Corrected prompt (.md)", p.read_bytes(), file_name=p.name, use_container_width=True)
+            st.download_button("Original prompt (.md)", config.BOT_PROMPT_PATH.read_bytes(),
+                               file_name=config.BOT_PROMPT_PATH.name, use_container_width=True)
+            if v["notes"]:
+                st.caption(v["notes"])
+        with right.container(border=True):
+            st.markdown("<div class='title-sm'>What changed</div>", unsafe_allow_html=True)
+            st.code(v["diff"] or "(no changes)", language="diff")
+
+# ─────────────────────────────── ⑥ TEST SETUP ───────────────────────────────
+with tabs[5]:
+    section("Test setup", "Each recording becomes a replayable test: what the bot knew at the start, the buyer's own "
+            "lines from the recording (the simulated buyer says these), and what the bot must get right.")
+    n_missing = (db.one("SELECT COUNT(*) n FROM grades WHERE call_id NOT IN (SELECT case_id FROM test_cases)")
+                 or {"n": 0})["n"]
+    run_button(f"🧪 Generate test setup for {n_missing} call(s)", "testcases", key="tc", disabled=not n_missing)
+    cases = db.rows("SELECT t.case_id, t.title, t.case_json, g.grade FROM test_cases t"
+                    " LEFT JOIN grades g ON g.call_id=t.case_id ORDER BY t.created_at")
+    if not cases:
+        st.info("No test cases yet.")
+    else:
+        st.write("")
+        for i in range(0, len(cases), 3):
+            cols = st.columns(3, gap="small")
+            for col, c in zip(cols, cases[i:i + 3]):
                 case = db.loads(c["case_json"], {})
                 ctx = case.get("context", {})
                 with col.container(border=True):
-                    st.markdown(f"<div class='title-sm'>{html.escape(Path(c['title']).stem)}</div>"
+                    st.markdown(f"<div style='display:flex;justify-content:space-between;gap:.5rem'>"
+                                f"<div class='title-sm' style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"
+                                f"{html.escape(Path(c['title']).stem)}</div>{result_pill(c['grade'])}</div>"
                                 f"<div class='muted'>{html.escape(ctx.get('product_name') or '—')} · "
-                                f"{ctx.get('language_name')} · live seller {'yes' if ctx.get('live_seller_available') else 'no'}"
-                                f" · {len(case.get('buyer_script', []))} buyer lines</div>", unsafe_allow_html=True)
-                    with st.expander("Buyer script & checks"):
-                        st.markdown(f"**Bot opens with:** {ctx.get('initial_message', '')}")
-                        for n, line in enumerate(case.get("buyer_script", []), 1):
-                            st.markdown(f"{n}. {line}")
-                        st.markdown("**The bot must:**\n" + "\n".join(f"- {x}" for x in case.get("checks", [])))
-    else:
-        s1, s2, s3, s4 = st.columns([2, 2, 2, 1], vertical_alignment="bottom")
-        src = s1.selectbox("Context", ["custom"] + [c["case_id"] for c in cases],
+                                f"{ctx.get('language_name')} · live seller "
+                                f"{'yes' if ctx.get('live_seller_available') else 'no'}</div>"
+                                f"<div style='margin:.4rem 0'>{chips([str(len(case.get('buyer_script', []))) + ' buyer lines', str(len(case.get('checks', []))) + ' checks'])}</div>",
+                                unsafe_allow_html=True)
+                    if st.button("Quick view", key=f"cv_{c['case_id']}", use_container_width=True):
+                        case_view(c["case_id"])
+
+        st.write("")
+        with st.container(border=True):
+            st.markdown("<div class='title-sm'>Run the automated test</div><div class='muted'>Each chosen case is replayed "
+                        "with the original and the corrected prompt; results appear in ⑧ Results.</div>",
+                        unsafe_allow_html=True)
+            versions = db.rows("SELECT version_id FROM prompt_versions ORDER BY created_at DESC")
+            if not versions:
+                st.warning("Create a corrected prompt in ⑤ first.")
+            else:
+                c1, c2, c3 = st.columns([1, 3, 1.1], vertical_alignment="bottom")
+                ver = c1.selectbox("Corrected prompt", [x["version_id"] for x in versions], key="test_ver")
+                failed = [r["case_id"] for r in cases if r["grade"] in ("FATAL", "NON_FATAL")]
+                chosen = c2.multiselect("Cases", [r["case_id"] for r in cases], default=failed or None,
+                                        format_func=lambda cid: Path(next(r["title"] for r in cases
+                                                                          if r["case_id"] == cid)).stem,
+                                        key="test_cases")
+                with c3:
+                    run_button("▶ Run test", "test", "--version", ver, "--cases", ",".join(chosen) or "none",
+                               key="run_test", disabled=not chosen, full=True)
+                st.caption(f"About {max(1, len(chosen))}–{2 * max(1, len(chosen))} min · bot engine "
+                           f"{config.SIM_BACKEND} ({config.SIM_BOT_MODEL}) · up to {config.SIM_MAX_TURNS} bot turns")
+
+# ─────────────────────────────── ⑦ MANUAL TEST ───────────────────────────────
+with tabs[6]:
+    section("Manual test", "You play the buyer. The bot follows the prompt as in production (tools are simulated). "
+            "Compare the original and the corrected prompt side by side.")
+    versions = [x["version_id"] for x in db.rows("SELECT version_id FROM prompt_versions ORDER BY created_at DESC")]
+    cases = db.rows("SELECT case_id, title, case_json FROM test_cases ORDER BY created_at")
+    with st.container(border=True):
+        s1, s2, s3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+        src = s1.selectbox("Start from", ["custom"] + [c["case_id"] for c in cases], key="mt_src",
                            format_func=lambda cid: "Custom product" if cid == "custom" else
-                           next(Path(c["title"]).stem for c in cases if c["case_id"] == cid))
-        names = list(prompts)
-        pa = s2.selectbox("Prompt A", names, index=0)
-        pb = s3.selectbox("Prompt B (optional)", ["—"] + names, index=len(names) if len(names) > 1 else 0)
+                           "Test case: " + Path(next(c["title"] for c in cases if c["case_id"] == cid)).stem)
+        modes = ["Original prompt"] + ([f"Corrected ({v})" for v in versions] +
+                                       [f"Compare original vs {v}" for v in versions] if versions else [])
+        mode = s2.selectbox("Bot", modes, index=len(modes) - 1 if versions else 0, key="mt_mode")
+        restart = s3.button("↺ New conversation", use_container_width=True)
         if src == "custom":
-            cc = st.columns([2, 1, 1])
-            product = cc[0].text_input("Product", value="Solar Panel")
-            lang = cc[1].selectbox("Language", ["hindi", "english", "telugu"])
-            live = cc[2].toggle("Live seller available")
-            ctx = {"flow": "helpdesk", "product_name": product, "language_name": lang,
-                   "live_seller_available": live, "quantity_unit_options": ["Piece"], "specification_options": {},
+            cc = st.columns([2, 1, 1], vertical_alignment="bottom")
+            product = cc[0].text_input("Product", value="Solar Panel", key="mt_prod")
+            lang = cc[1].selectbox("Language", ["hindi", "english", "telugu"], key="mt_lang")
+            live = cc[2].toggle("Live seller available", key="mt_live")
+            ctx = {"flow": "helpdesk", "product_name": product, "language_name": lang, "live_seller_available": live,
+                   "quantity_unit_options": ["Piece"], "specification_options": {},
                    "initial_message": f"Namaste, main Vani bol rahi hoon IndiaMART se. Kya aapko {product} ki requirement hai?"}
         else:
             ctx = db.loads(next(c["case_json"] for c in cases if c["case_id"] == src), {}).get("context", {})
-        chosen = [x for x in (pa, pb) if x and x != "—"]
-        key = json.dumps([src, chosen, ctx], sort_keys=True)
-        mt = st.session_state.get("mt")
-        if s4.button("Restart", use_container_width=True) or not mt or mt["key"] != key:
-            bots = {n: simulate.LocalBot(Path(prompts[n]).read_text(encoding="utf-8"), dict(ctx)) for n in chosen}
-            mt = {"key": key, "bots": bots, "score": {},
-                  "turns": {n: [{"idx": 0, "role": "BOT", "text": b.opener()["text"]}] for n, b in bots.items()}}
-            st.session_state["mt"] = mt
-        cols = st.columns(len(chosen), gap="medium")
-        for col, n in zip(cols, chosen):
-            with col.container(border=True):
-                st.markdown(f"<div class='title-sm'>{html.escape(n)}</div>"
-                            f"{pill('call ended', 'p-na') if mt['bots'][n].ended else ''}", unsafe_allow_html=True)
-                bubbles(mt["turns"][n], meta=True, height=400)
-                if n in mt["score"]:
-                    sc = mt["score"][n]
-                    st.markdown(result_pill(sc["grade"]) + " " + " ".join(
-                        pill(rubric.PARAM_NAMES[c["param"]], PSTATUS[c["status"]][1])
-                        for c in sc["scorecard"] if c["status"] in ("fatal", "non_fatal")), unsafe_allow_html=True)
-        msg = st.chat_input("Type what the buyer says…")
-        if msg:
-            live_ = [n for n in chosen if not mt["bots"][n].ended]
-            for n in live_:
-                mt["turns"][n].append({"idx": len(mt["turns"][n]), "role": "BUYER", "text": msg})
+    if mode.startswith("Compare"):
+        ver, variants = mode.split(" vs ")[1], ["original", "corrected"]
+    elif mode.startswith("Corrected"):
+        ver, variants = mode[len("Corrected ("):-1], ["corrected"]
+    else:
+        ver, variants = None, ["original"]
 
-            def reply(n):
-                try:
-                    r = mt["bots"][n].reply(mt["turns"][n])
-                    return n, {"idx": len(mt["turns"][n]), "role": "BOT", "text": r["text"], "tools": r["tools"],
-                               "vars": r["vars"]}
-                except Exception as e:
-                    return n, {"idx": len(mt["turns"][n]), "role": "BOT", "text": f"⚠ {e}"}
+    key = (src, mode, json.dumps(ctx, sort_keys=True))
+    mt = st.session_state.get("mt")
+    if restart or not mt or mt["key"] != key:
+        bots = {v: simulate.new_manual_bot(v, ver, ctx) for v in variants}
+        mt = {"key": key, "bots": bots, "score": {},
+              "turns": {v: [{"idx": 0, "role": "BOT", "text": b.opener()["text"]}] for v, b in bots.items()}}
+        st.session_state["mt"] = mt
 
-            with st.spinner("Bot is replying…"):
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    for n, t in pool.map(reply, live_):
-                        mt["turns"][n].append(t)
-            st.rerun()
-        if st.button("Score with the audit sheet", disabled=all(len(mt["turns"][n]) < 3 for n in chosen)):
-            with st.spinner("Scoring…"):
-                for n in chosen:
-                    mt["score"][n] = simulate.grade_sim(mt["turns"][n])
-            st.rerun()
+    cols = st.columns(len(variants), gap="medium")
+    for col, v in zip(cols, variants):
+        with col.container(border=True):
+            label = "Original prompt" if v == "original" else f"Corrected prompt · {ver}"
+            st.markdown(f"<div class='title-sm'>{label}</div>"
+                        f"{pill('call ended', 'p-na') if mt['bots'][v].ended else ''}", unsafe_allow_html=True)
+            bubbles(mt["turns"][v], meta=True, height=420, times=False)
+            if v in mt["score"]:
+                sc = mt["score"][v]
+                st.markdown(result_pill(sc["grade"]) + " " + " ".join(
+                    pill(rubric.PARAM_NAMES[c["param"]], PSTATUS[c["status"]][1])
+                    for c in sc["scorecard"] if c["status"] in ("fatal", "non_fatal")), unsafe_allow_html=True)
 
-# ─────────────────────────────── CRITERIA ───────────────────────────────
-elif page == "Criteria":
+    msg = st.chat_input("Type what the buyer says…", key="mt_input")
+    if msg:
+        live_variants = [v for v in variants if not mt["bots"][v].ended]
+        for v in live_variants:
+            mt["turns"][v].append({"idx": len(mt["turns"][v]), "role": "BUYER", "text": msg})
+
+        def reply(v):
+            try:
+                r = mt["bots"][v].reply(mt["turns"][v])
+                return v, {"idx": len(mt["turns"][v]), "role": "BOT", "text": r["text"], "tools": r["tools"],
+                           "vars": r["vars"]}
+            except Exception as e:
+                return v, {"idx": len(mt["turns"][v]), "role": "BOT", "text": f"⚠ error: {e}"}
+
+        with st.spinner("Bot is replying…"):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                for v, t in pool.map(reply, live_variants):
+                    mt["turns"][v].append(t)
+        st.rerun()
+    if st.button("Score these conversations with the audit sheet",
+                 disabled=all(len(mt["turns"][v]) < 3 for v in variants)):
+        with st.spinner("Scoring…"):
+            for v in variants:
+                mt["score"][v] = simulate.grade_sim(mt["turns"][v])
+        st.rerun()
+
+# ─────────────────────────────── ⑧ RESULTS ───────────────────────────────
+with tabs[7]:
+    section("Before vs after", "Each test case replayed with the original prompt and with the corrected prompt, both "
+            "scored with the audit sheet. The real recording's result is shown for reference.")
+    runs = db.rows("SELECT * FROM test_runs ORDER BY run_id DESC")
+    if not runs:
+        st.info("No test runs yet — run one from ⑥ Test setup.")
+    else:
+        run = st.selectbox("Test run", runs, key="run_pick",
+                           format_func=lambda r: f"Run {r['run_id']} · prompt {r['version_id']} · {r['status']} · "
+                                                 f"{r['started_at'][:16].replace('T', ' ')}")
+
+        @st.fragment(run_every=5 if run["status"] == "running" else None)
+        def results_view():
+            r = db.one("SELECT * FROM test_runs WHERE run_id=?", (run["run_id"],))
+            sims = db.rows("SELECT * FROM sim_results WHERE run_id=? ORDER BY case_id, variant", (r["run_id"],))
+            if r["status"] == "running":
+                st.progress(len(sims) / max(1, 2 * (r["n_cases"] or 1)),
+                            text=f"Running… {len(sims)} of {2 * (r['n_cases'] or 0)} simulated calls done")
+            if r["status"] == "error":
+                st.error((db.loads(r["summary_json"], {}) or {}).get("error", "failed"))
+            case_ids = sorted({s["case_id"] for s in sims})
+            real = {c: db.one("SELECT grade, scorecard_json FROM grades WHERE call_id=?", (c,)) or {} for c in case_ids}
+
+            def sim_of(c, v):
+                return next((s for s in sims if s["case_id"] == c and s["variant"] == v and not s["error"]), None)
+
+            cols3 = {"Recording": lambda c: real[c].get("grade"),
+                     "Original prompt": lambda c: (sim_of(c, "original") or {}).get("grade"),
+                     "Corrected prompt": lambda c: (sim_of(c, "corrected") or {}).get("grade")}
+            k = st.columns(3)
+            for col, (label, get) in zip(k, cols3.items()):
+                gs = [get(c) for c in case_ids]
+                f_, m_, p_ = gs.count("FATAL"), gs.count("NON_FATAL"), gs.count("PASS")
+                accent = "fatal" if f_ else "minor" if m_ else "pass"
+                col.markdown(f"<div class='kpi a-{accent}'><div class='lbl'>{label}"
+                             f"{' (simulated)' if label != 'Recording' else ' (real call)'}</div>"
+                             f"<div style='display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.55rem'>"
+                             f"{pill(f'{f_} Fatal', 'p-fatal')}{pill(f'{m_} Non-fatal', 'p-minor')}"
+                             f"{pill(f'{p_} Pass', 'p-pass')}</div></div>", unsafe_allow_html=True)
+            st.write("")
+
+            def fails(card_json, key):
+                return any(c["param"] == key and c["status"] in ("fatal", "non_fatal")
+                           for c in db.loads(card_json, []) or [])
+
+            rows = []
+            for key in rubric.PARAM_KEYS:
+                rec = sum(fails(real[c].get("scorecard_json"), key) for c in case_ids)
+                o = sum(fails((sim_of(c, "original") or {}).get("scorecard_json"), key) for c in case_ids)
+                n = sum(fails((sim_of(c, "corrected") or {}).get("scorecard_json"), key) for c in case_ids)
+                if rec or o or n:
+                    rows.append({"Parameter": rubric.PARAM_NAMES[key], "Recording": rec, "Original prompt": o,
+                                 "Corrected prompt": n,
+                                 "Change": "✅ better" if n < o else "❌ worse" if n > o else "= same"})
+            with st.container(border=True):
+                st.markdown("<div class='title-sm'>Failing calls per parameter</div><div class='muted'>fatal + "
+                            "non-fatal</div>", unsafe_allow_html=True)
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                else:
+                    st.markdown(pill("No parameter failed in any simulated call", "p-pass"), unsafe_allow_html=True)
+
+            st.markdown("<div class='title-sm' style='margin-top:.8rem'>Each case</div>", unsafe_allow_html=True)
+            for c in case_ids:
+                o, n = sim_of(c, "original"), sim_of(c, "corrected")
+                title = (db.one("SELECT title FROM test_cases WHERE case_id=?", (c,)) or {}).get("title", c)
+                with st.container(border=True):
+                    st.markdown(f"<b>{html.escape(Path(title).stem)}</b>&nbsp;&nbsp; recording "
+                                f"{result_pill(real[c].get('grade'))} → original {result_pill((o or {}).get('grade'))}"
+                                f" → corrected {result_pill((n or {}).get('grade'))}", unsafe_allow_html=True)
+                    with st.expander("Compare conversations"):
+                        oc = db.loads((o or {}).get("scorecard_json"), [])
+                        nc = db.loads((n or {}).get("scorecard_json"), [])
+                        diff = []
+                        for key in rubric.PARAM_KEYS:
+                            so = next((x["status"] for x in oc if x["param"] == key), "na")
+                            sn = next((x["status"] for x in nc if x["param"] == key), "na")
+                            if so != sn or so in ("fatal", "non_fatal"):
+                                diff.append({"Parameter": rubric.PARAM_NAMES[key], "Original prompt": PSTATUS[so][0],
+                                             "Corrected prompt": PSTATUS[sn][0]})
+                        if diff:
+                            st.dataframe(pd.DataFrame(diff), hide_index=True, use_container_width=True)
+                        a, b = st.columns(2, gap="medium")
+                        for col, s, variant, label in ((a, o, "original", "Original prompt"),
+                                                       (b, n, "corrected", "Corrected prompt")):
+                            with col:
+                                st.markdown(f"**{label}**")
+                                err = next((x["error"] for x in sims if x["case_id"] == c and x["error"]
+                                            and x["variant"] == variant), None)
+                                if err:
+                                    st.error(err)
+                                bubbles(db.loads((s or {}).get("turns_json"), []), meta=True, height=380, times=False)
+
+        results_view()
+
+# ─────────────────────────────── AUDIT CRITERIA ───────────────────────────────
+with tabs[8]:
+    section("Audit criteria", "IndiaMART's call-audit sheet (plus two VANI prompt rules). Overall: Fatal if any "
+            f"parameter is fatal · Non-fatal if any is non-fatal · otherwise Pass. Looping = more than "
+            f"{rubric.LOOP_LIMIT} asks of one field · Dead air = more than {rubric.DEAD_AIR_SEC:.0f} s of bot silence.")
     a, b = st.columns([3, 2], gap="medium")
-    with a:
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Audit sheet</div><div class='muted'>Overall: Fatal if any parameter "
-                        "is fatal · Non-fatal if any is non-fatal · otherwise Pass.</div>", unsafe_allow_html=True)
-            for key, name, d, f, nf in rubric.PARAMETERS:
-                with st.expander(name):
-                    st.markdown(f"{d}\n\n{pill('Fatal', 'p-fatal')} {html.escape(f)}<br><br>"
-                                f"{pill('Non-fatal', 'p-minor')} {html.escape(nf)}", unsafe_allow_html=True)
-    with b:
-        with st.container(border=True):
-            st.markdown("<div class='title-sm'>Agreement with human auditors</div>", unsafe_allow_html=True)
-            m = agreement.metrics()
-            if m:
-                k = st.columns(3)
-                kpi(k[0], "Labelled", m["n"])
-                kpi(k[1], "Fatal agree", f"{m['accuracy']:.0%}")
-                kpi(k[2], "Cohen's κ", f"{m['kappa']:.2f}")
-            else:
-                st.caption("No verdicts yet — open a call's Quick view → Your verdict, or import a CSV.")
-            up = st.file_uploader("Import labels (CSV: filename, label)", type=["csv"])
-            if up and st.button("Import", type="primary"):
-                r = agreement.import_csv(up.getvalue())
-                st.success(f"Imported {r['imported']}")
+    with a.container(border=True):
+        st.markdown("<div class='title-sm'>Audit sheet</div>", unsafe_allow_html=True)
+        for _, name, d, f, nf in rubric.PARAMETERS:
+            with st.expander(name):
+                st.markdown(f"{html.escape(d)}<br><br>{pill('Fatal', 'p-fatal')} {html.escape(f)}<br><br>"
+                            f"{pill('Non-fatal', 'p-minor')} {html.escape(nf)}", unsafe_allow_html=True)
+    with b.container(border=True):
+        st.markdown("<div class='title-sm'>Agreement with human auditors</div>", unsafe_allow_html=True)
+        m = agreement.metrics()
+        if not m:
+            st.caption("No labelled calls yet — open Quick view on a call in ③ Issues → Your verdict, or import a CSV.")
+        else:
+            x = st.columns(2)
+            kpi(x[0], "Labelled calls", m["n"])
+            kpi(x[1], "Cohen's κ", f"{m['kappa']:.2f}")
+            x = st.columns(2)
+            kpi(x[0], "Fatal vs not", f"{m['accuracy']:.0%}", "agreement")
+            kpi(x[1], "Exact match", f"{m['exact_match']:.0%}", "3 levels")
+            if m["disagreements"]:
+                st.write("")
+                st.dataframe(pd.DataFrame([{
+                    "Call": next((Path(r["filename"]).stem for r in calls if r["call_id"] == d["call_id"]), d["call_id"]),
+                    "Human": RESULT.get(d["human"], (d["human"],))[0], "Auto": RESULT.get(d["auto"], (d["auto"],))[0]}
+                    for d in m["disagreements"]]), hide_index=True, use_container_width=True)
+        st.write("")
+        up = st.file_uploader("Import labels CSV (filename or call_id, label = Pass / Non-fatal / Fatal)",
+                              type=["csv"], key="lab_csv")
+        if up and st.button("Import labels", type="primary"):
+            r = agreement.import_csv(up.getvalue())
+            st.success(f"Imported {r['imported']} label(s)")
+            if r["unmatched"]:
+                st.warning("Not found: " + ", ".join(r["unmatched"][:10]))
