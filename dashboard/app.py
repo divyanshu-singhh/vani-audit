@@ -22,6 +22,7 @@ from audit.pipeline import LOCK, current_step, is_running  # noqa: E402
 
 st.set_page_config(page_title="VANI · Call Quality Audit", page_icon="◉", layout="wide")
 db.init()
+rubric.reload()   # the audit sheet is a shared file; pick up edits made elsewhere
 
 # ─────────────────────────────── design tokens ───────────────────────────────
 INK, MUTED, LINE = "#1E2235", "#6B7085", "#E6E8F0"
@@ -286,9 +287,21 @@ def call_view(call_id: str):
         lab = st.segmented_control("Overall", opts, format_func=lambda o: RESULT[o][0],
                                    default=h["label"] if h and h["label"] in opts else None, key=f"lab_{call_id}")
         notes = st.text_input("Notes", value=h["notes"] if h else "", key=f"notes_{call_id}")
+
         if st.button("Save verdict", type="primary", disabled=not lab, key=f"save_{call_id}"):
             agreement.set_label(call_id, lab, notes, "dashboard")
             st.success("Saved")
+
+        with st.expander("Found a problem that isn't on the audit sheet? Add it as a new row"):
+            with st.form(f"newrow_{call_id}", clear_on_submit=True):
+                nm = st.text_input("Name", placeholder="e.g. Buyer language not honoured")
+                dfn = st.text_area("What it checks", placeholder="The question an auditor asks for this row.")
+                f1, f2 = st.columns(2)
+                fz = f1.text_area("Fatal when", placeholder="Leave empty if it can never be fatal")
+                nz = f2.text_area("Non-fatal when", placeholder="Leave empty if it can never be non-fatal")
+                if st.form_submit_button("Add to the sheet", type="primary") and nm.strip() and dfn.strip():
+                    rubric.add_parameter(nm, dfn, fz, nz, "dashboard")
+                    st.success(f"Added “{nm.strip()}” to the audit sheet. It applies from the next audit.")
 
 
 @st.dialog("Prompt change", width="large")
@@ -537,10 +550,10 @@ with tabs[2]:
                       unsafe_allow_html=True)
         st.write("")
 
-        counts = {key: {"fatal": 0, "non_fatal": 0} for key in rubric.PARAM_KEYS}
+        counts = {key: {"fatal": 0, "non_fatal": 0} for key in rubric.PARAM_NAMES}
         for c in graded:
             for b in c["bad"]:
-                counts[b["param"]][b["status"]] += 1
+                counts.setdefault(b["param"], {"fatal": 0, "non_fatal": 0})[b["status"]] += 1
         freq = [(k_, v) for k_, v in counts.items() if v["fatal"] or v["non_fatal"]]
         with st.container(border=True):
             st.markdown("<div class='title-sm'>Which parameters fail most</div>", unsafe_allow_html=True)
@@ -568,7 +581,9 @@ with tabs[2]:
                             if b["batch_id"] == x))
         f1, f2 = st.columns([1.7, 3], vertical_alignment="bottom")
         res = f1.pills("Result", ["All", "Fatal", "Non-fatal", "Pass", "Needs review"], default="All", key="iss_res")
-        seen = sorted({b["param"] for c in graded for b in c["bad"]}, key=rubric.PARAM_KEYS.index)
+        order = list(rubric.PARAM_NAMES)
+        seen = sorted({b["param"] for c in graded for b in c["bad"]},
+                      key=lambda p: order.index(p) if p in order else len(order))
         sel = f2.pills("Error", seen, selection_mode="multi", format_func=rubric.PARAM_NAMES.get, key="iss_err")
         want = {"Fatal": "FATAL", "Non-fatal": "NON_FATAL", "Pass": "PASS"}.get(res or "All")
         shown = [c for c in graded if (bsel in (None, "All batches") or c["batch_id"] == bsel)
@@ -962,11 +977,45 @@ with tabs[8]:
     st.write("")
     a, b = st.columns([3, 2], gap="medium")
     with a.container(border=True):
-        st.markdown("<div class='title-sm'>Audit sheet</div>", unsafe_allow_html=True)
-        for _, name, d, f, nf in rubric.PARAMETERS:
-            with st.expander(name):
-                st.markdown(f"{html.escape(d)}<br><br>{pill('Fatal', 'p-fatal')} {html.escape(f)}<br><br>"
-                            f"{pill('Non-fatal', 'p-minor')} {html.escape(nf)}", unsafe_allow_html=True)
+        st.markdown("<div class='title-sm'>Audit sheet</div>"
+                    "<div class='muted'>A living knowledge base: edit any row or add a new one. Saved to "
+                    f"<code>{rubric.SHEET_FILE.relative_to(config.ROOT).as_posix()}</code> — commit that file to "
+                    "share it. Changes apply to the next audit (use “Re-audit” to apply them to existing calls)."
+                    "</div>", unsafe_allow_html=True)
+        for r in rubric.load_sheet():
+            key, name = r["key"], r["name"]
+            tag = ("" if r.get("builtin") else "  ·  added by you") + ("" if r.get("active", True) else "  ·  OFF")
+            with st.expander(name + tag):
+                nd = st.text_area("What it checks", r["definition"], key=f"sd_{key}")
+                c1, c2 = st.columns(2)
+                nf_ = c1.text_area("Fatal when  (— = not applicable)", r["fatal"], key=f"sf_{key}")
+                nn = c2.text_area("Non-fatal when  (— = not applicable)", r["non_fatal"], key=f"sn_{key}")
+                b1, b2, b3 = st.columns([1.3, 1.3, 1])
+                if b1.button("Save changes", key=f"ss_{key}", type="primary",
+                             disabled=(nd, nf_, nn) == (r["definition"], r["fatal"], r["non_fatal"])):
+                    rubric.update_parameter(key, "dashboard", definition=nd, fatal=nf_, non_fatal=nn)
+                    st.rerun()
+                if key not in rubric.PROTECTED:   # on_change: acts only on a real click, never on page re-runs
+                    b2.toggle("Use in audits", bool(r.get("active", True)), key=f"sa_{key}",
+                              on_change=lambda k=key: rubric.set_active(k, st.session_state[f"sa_{k}"], "dashboard"))
+                if not r.get("builtin") and b3.button("Delete row", key=f"sx_{key}"):
+                    rubric.delete_parameter(key)
+                    st.rerun()
+                if r.get("history"):
+                    h = r["history"][-1]
+                    st.caption(f"Last change: {h['change']} · {h['by'] or 'unknown'} · {h['at'][:16].replace('T', ' ')}")
+        with st.expander("➕ Add a new row to the sheet"):
+            with st.form("sheet_add", clear_on_submit=True):
+                nm = st.text_input("Name", placeholder="e.g. Buyer language not honoured")
+                df_ = st.text_area("What it checks", placeholder="The question an auditor asks for this row.")
+                c1, c2 = st.columns(2)
+                nf_ = c1.text_area("Fatal when", placeholder="Leave empty if it can never be fatal")
+                nn_ = c2.text_area("Non-fatal when", placeholder="Leave empty if it can never be non-fatal")
+                if st.form_submit_button("Add row", type="primary") and nm.strip() and df_.strip():
+                    rubric.add_parameter(nm, df_, nf_, nn_, "dashboard")
+                    st.rerun()
+        run_button("Re-audit all calls with the updated sheet", "regrade", key="sheet_regrade",
+                   help="Grades every call again so sheet changes apply to existing recordings (uses Sarvam credits).")
     with b.container(border=True):
         st.markdown("<div class='title-sm'>Agreement with human auditors</div>", unsafe_allow_html=True)
         m = agreement.metrics()
