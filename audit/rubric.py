@@ -7,9 +7,17 @@ status per parameter — ok / non_fatal / fatal / na — and an overall result:
     NON_FATAL  if any parameter is non-fatal
     PASS       otherwise
 """
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 
-# key, name, definition, when FATAL, when NON-FATAL
-PARAMETERS = [
+# The audit sheet is a living knowledge base: knowledge/audit_sheet.json (committed to the repo) is the
+# source of truth. It is created from the defaults below on first use; after that it is edited from the
+# dashboard (Audit criteria tab), where rows can be reworded and new rows added.
+#
+# default sheet: key, name, definition, when FATAL, when NON-FATAL
+_DEFAULT_PARAMETERS = [
     ("OUTCOME_ACCURACY", "Outcome Accuracy",
      "Was the buyer's intent (buying or not buying) judged correctly by the bot?",
      "Always fatal: a real buyer treated as not buying (or vice versa).", "—"),
@@ -83,12 +91,132 @@ PARAMETERS = [
      "Minor inaccuracy with no effect on the buyer's decision."),
 ]
 
-PARAM_KEYS = [p[0] for p in PARAMETERS]
-PARAM_NAMES = {p[0]: p[1] for p in PARAMETERS}
-NO_NON_FATAL = {p[0] for p in PARAMETERS if p[4] == "—"}   # parameters that are fatal-or-ok only
-NO_FATAL = {p[0] for p in PARAMETERS if p[3] == "—"}       # non-fatal-or-ok only (dead air)
 LOOP_LIMIT = 3  # "probing more than 1 + 2 times"
 DEAD_AIR_SEC = 5.0
+
+SHEET_FILE = Path(__file__).resolve().parent.parent / "knowledge" / "audit_sheet.json"
+BUILTIN_KEYS = {p[0] for p in _DEFAULT_PARAMETERS}
+PROTECTED = {"DEAD_AIR", "LOOPING", "COMPLIANCE"}   # the grader's rule checks write to these; never switch off
+NA = "—"                                            # "this severity does not apply to the parameter"
+
+
+class _Names(dict):
+    """key -> display name; unknown keys (rows deleted since a call was graded) show as themselves."""
+    def __missing__(self, key):
+        return key
+
+
+# Live views of the sheet. They are updated IN PLACE by reload(), so modules that imported them
+# (e.g. the grader's JSON schema) always see the current sheet.
+PARAMETERS: list[tuple] = []       # active rows: (key, name, definition, fatal, non_fatal)
+PARAM_KEYS: list[str] = []         # active keys, in sheet order
+PARAM_NAMES = _Names()             # every row, active or not
+NO_NON_FATAL: set[str] = set()     # parameters that are fatal-or-ok only
+NO_FATAL: set[str] = set()         # non-fatal-or-ok only (dead air)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _seed() -> list[dict]:
+    return [{"key": k, "name": n, "definition": d, "fatal": f, "non_fatal": nf, "builtin": True,
+             "active": True, "added_by": "default", "added_at": _now(), "updated_at": _now(), "history": []}
+            for k, n, d, f, nf in _DEFAULT_PARAMETERS]
+
+
+def load_sheet() -> list[dict]:
+    """All rows of the sheet (active and inactive). Creates the file from the defaults if missing."""
+    try:
+        rows = json.loads(SHEET_FILE.read_text(encoding="utf-8"))["parameters"]
+        if rows:
+            return rows
+    except (OSError, ValueError, KeyError):
+        pass
+    rows = _seed()
+    _write(rows)
+    return rows
+
+
+def _write(rows: list[dict]):
+    SHEET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SHEET_FILE.write_text(json.dumps({"version": 1, "parameters": rows}, ensure_ascii=False, indent=1),
+                          encoding="utf-8")
+
+
+def reload():
+    rows = load_sheet()
+    active = [r for r in rows if r.get("active", True)]
+    PARAMETERS[:] = [(r["key"], r["name"], r["definition"], r["fatal"], r["non_fatal"]) for r in active]
+    PARAM_KEYS[:] = [r["key"] for r in active]
+    PARAM_NAMES.clear()
+    PARAM_NAMES.update({r["key"]: r["name"] for r in rows})
+    NO_NON_FATAL.clear()
+    NO_NON_FATAL.update(r["key"] for r in active if r["non_fatal"].strip() == NA)
+    NO_FATAL.clear()
+    NO_FATAL.update(r["key"] for r in active if r["fatal"].strip() == NA)
+
+
+def _save(rows: list[dict]):
+    _write(rows)
+    reload()
+
+
+def _log(row: dict, by: str, change: str):
+    row["updated_at"] = _now()
+    row["history"] = (row.get("history") or [])[-19:] + [{"at": row["updated_at"], "by": by, "change": change}]
+
+
+def add_parameter(name: str, definition: str, fatal: str, non_fatal: str, by: str = "") -> str:
+    """Insert a new row at the end of the sheet and return its key."""
+    rows = load_sheet()
+    base = "CUSTOM_" + (re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()[:28] or "PARAM")
+    key, n = base, 2
+    while any(r["key"] == key for r in rows):
+        key, n = f"{base}_{n}", n + 1
+    row = {"key": key, "name": name.strip(), "definition": definition.strip(), "fatal": fatal.strip() or NA,
+           "non_fatal": non_fatal.strip() or NA, "builtin": False, "active": True, "added_by": by,
+           "added_at": _now(), "updated_at": _now(), "history": []}
+    _log(row, by, "added")
+    rows.append(row)
+    _save(rows)
+    return key
+
+
+def update_parameter(key: str, by: str = "", **fields) -> bool:
+    """Edit name / definition / fatal / non_fatal of a row. Returns False if nothing changed."""
+    rows = load_sheet()
+    row = next((r for r in rows if r["key"] == key), None)
+    changed = []
+    for f in ("name", "definition", "fatal", "non_fatal"):
+        if f in fields:
+            v = fields[f].strip() or (NA if f in ("fatal", "non_fatal") else row[f])
+            if row and v != row[f]:
+                row[f] = v
+                changed.append(f)
+    if not row or not changed:
+        return False
+    _log(row, by, "edited " + ", ".join(changed))
+    _save(rows)
+    return True
+
+
+def set_active(key: str, active: bool, by: str = ""):
+    if key in PROTECTED and not active:
+        return
+    rows = load_sheet()
+    for r in rows:
+        if r["key"] == key and bool(r.get("active", True)) != active:
+            r["active"] = active
+            _log(r, by, "switched on" if active else "switched off")
+    _save(rows)
+
+
+def delete_parameter(key: str):
+    """Remove a row you added. The rows that shipped with the sheet can only be switched off."""
+    if key in BUILTIN_KEYS:
+        return
+    _save([r for r in load_sheet() if r["key"] != key])
 
 LAYERS = {
     "prompt": "Prompt lacks / has conflicting / unclear instruction",
@@ -159,3 +287,6 @@ def rubric_text() -> str:
     return (f"## Bot rules (digest of the production prompt)\n{BOT_RULES_DIGEST}\n"
             f"## Flows\n{flows}\n\n## Audit parameters (score EVERY one: ok / non_fatal / fatal / na)\n{params}\n\n"
             f"## NOT issues (do not flag these)\n{NOT_ISSUES}\n## Failure layers (where the fix belongs)\n{layers}\n")
+
+
+reload()
